@@ -1,0 +1,15 @@
+[package]
+name = "ebox"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.20", features = ["derive"] }
+chrono = "0.4.38"
+walkdir = "2.5.0"
+ffmpeg-next = { version = "7.1.0", features = [ "static"] }
+
+
+[[bin]]
+name ="vmd"
+path = "src/bin/vmd.rs"
