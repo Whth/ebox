@@ -7,28 +7,44 @@ use std::path::PathBuf;
 use std::process::Command;
 use walkdir::WalkDir;
 
+
+
 #[derive(Parser)]
 #[command(name = "video_concatenator")]
 #[command(author, version, about, long_about = "Concatenate videos with ffmpeg")]
 struct Cli {
-    #[arg(short, long, default_value = "./videos")]
+    /// the input directory
+    #[arg(short, long, default_value = "./")]
     dir: String,
 
+
+    /// the maximum duration of the input video
     #[arg(short, long, default_value = "15")]
     max_duration: u64,
 
+
+
+
+    /// the output file
     #[arg(short, long, default_value = "output.mp4")]
     output: String,
 
+
+    /// use nvenc
     #[arg(long,short)]
     use_nvenc: bool,
 
-    #[arg(long,short,env="FFMPEG_DIR")]
-    ffmepg_dir: String,
+
+
 }
+
+
+
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+    println!("Using directory: {}", cli.dir);
+
 
     let dir_path = PathBuf::from(&cli.dir);
     let max_duration = Duration::seconds(cli.max_duration as i64);
