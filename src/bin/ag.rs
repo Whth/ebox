@@ -37,7 +37,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
-    #[command(about = "Chat with the OpenAI API")]
+    #[command(visible_alias = "c",about = "Chat with the OpenAI API")]
     Chat {
         /// The prompt to send to the OpenAI API
         prompt: Vec<String>,
@@ -55,10 +55,10 @@ enum Commands {
         #[arg(short,long, default_value_t = 1.0)]
         top_p:f32
     },
-    #[command(about = "List all available models")]
+    #[command(visible_alias = "l",about = "List all available models")]
     Models,
 
-    #[command(about = "Pin a specific model")]
+    #[command(visible_alias = "p",about = "Pin a specific model")]
     Pin{
         /// The name of the model to pin
         #[arg(value_name = "MODEL")]
