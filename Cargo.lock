@@ -300,15 +300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clap_complete"
-version = "4.5.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9647a559c112175f17cf724dc72d3645680a883c58481332779192b0d8e7a01"
-dependencies = [
- "clap",
-]
-
-[[package]]
 name = "clap_derive"
 version = "4.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -520,15 +511,12 @@ dependencies = [
  "async-openai",
  "chrono",
  "clap",
- "clap_complete",
  "ffmpeg-next",
  "futures",
- "lazy_static",
  "prettytable",
  "rayon",
  "serde",
  "shellexpand",
- "sort",
  "tokio",
  "toml",
  "walkdir",
@@ -1919,12 +1907,6 @@ dependencies = [
  "libc",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "sort"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79b736394cbcbad245669dc12a0caff9b2570e9ad81ce9906f5d7831551cb0c5"
 
 [[package]]
 name = "spin"

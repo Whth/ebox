@@ -8,7 +8,6 @@ clap = { version = "4.5.20", features = ["derive", "env", "string", "unicode"] }
 chrono = "0.4.38"
 walkdir = "2.5.0"
 ffmpeg-next = { version = "7.1.0" }
-lazy_static = "1.5.0"
 rayon = "1.10.0"
 tokio = { version = "1.41.1", features = ["full"] }
 futures = "0.3.31"
@@ -16,9 +15,7 @@ async-openai = { version = "0.26.0", features = ["native-tls", "realtime"] }
 serde = { version = "1.0.215", features = ["derive"] }
 toml = "0.8.19"
 shellexpand = "3.1.0"
-sort = "0.8.5"
 prettytable = "0.10.0"
-clap_complete = "4.5.38"
 
 
 [[bin]]

@@ -1,4 +1,3 @@
-use std::env;
 use async_openai::types::{ChatCompletionRequestUserMessageArgs};
 use async_openai::{types::CreateChatCompletionRequestArgs, Client};
 use clap::{Parser, Subcommand};
