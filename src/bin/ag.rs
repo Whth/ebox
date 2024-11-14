@@ -1,3 +1,4 @@
+use std::env;
 use async_openai::types::{ChatCompletionRequestUserMessageArgs};
 use async_openai::{types::CreateChatCompletionRequestArgs, Client};
 use clap::{Parser, Subcommand};
@@ -18,10 +19,12 @@ use chrono::{DateTime, Utc};
 struct Cli {
     /// The API key to use
     #[clap(short, long, env = "OPENAI_API_KEY")]
-    api_key: Option<String>,
+    key: Option<String>,
+
     /// The host of the OpenAI API
-    #[clap(short, long, default_value = "https://api.openai.com/v1", env = "OPENAI_API_HOST")]
-    api_host: Option<String>,
+    #[clap( long, default_value = "https://api.openai.com/v1", env = "OPENAI_API_HOST")]
+    host_url: Option<String>,
+
 
     #[clap(short, long,env = "OPENAI_MODEL")]
     /// The model to use
@@ -105,8 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
     let client = Client::with_config(OpenAIConfig::default()
-        .with_api_key(cli.api_key.or(config.api_key.take()).ok_or("API key is required")?)
-        .with_api_base(cli.api_host.or(config.api_host.take()).ok_or("API host is required")?)
+        .with_api_key(cli.key.or(config.api_key.take()).ok_or("API key is required")?)
+        .with_api_base(cli.host_url.or(config.api_host.take()).ok_or("API host is required")?)
         );
 
     match &cli.command {
@@ -153,8 +156,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut table = Table::default();
             table.add_row(row!["Index", "ID", "Owned By", "Created"]);
 
-            models.data.sort_by_key(|m| m.created);
-            models.data.iter().rev().enumerate()
+            models.data.sort_by_key(|m| -(m.created as i32));
+            models.data.iter().enumerate()
                 .for_each(
                 |(ind, model)|{
                     let created_time: DateTime<Utc> = DateTime::from_timestamp(model.created as i64, 0).expect("Failed to parse timestamp");
@@ -171,16 +174,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Pin {
             model
         }=> {
-            Process::new("set")
-                .arg("OPENAI_MODEL")
-                .arg(model)
-                .spawn()
-                .expect("Failed to execute command");
+
+            let model_name=if model.chars().all(|c| c.is_ascii_digit()){
+                let index: usize = model.parse().expect("Invalid index");
+                let mut models=client.models().list().await.expect("Failed to list models").data;
+                models.sort_by_key(|m| -(m.created as i32));
+                models.get(index).expect("Invalid index").id.clone()
+
+            }else { model.clone() };
+
+
+
+            env::set_var("OPENAI_MODEL", &model_name);
             Process::new("setx")
                 .arg("OPENAI_MODEL")
-                .arg(model)
+                .arg(&model_name)
                 .spawn()
                 .expect("Failed to execute command");
+            println!("Pinned model: {}", model_name);
         }
     }
 
