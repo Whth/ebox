@@ -185,7 +185,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
 
-            env::set_var("OPENAI_MODEL", &model_name);
             Process::new("setx")
                 .arg("OPENAI_MODEL")
                 .arg(&model_name)
