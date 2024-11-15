@@ -1,12 +1,12 @@
 use clap::Parser;
-use walkdir::WalkDir;
+use dialoguer::{Confirm, Select};
+use fs_extra::dir::CopyOptions;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self};
 use std::path::PathBuf;
 use strsim::levenshtein;
-use dialoguer::{Input, Select};
-use fs_extra::dir::CopyOptions;
+use walkdir::WalkDir;
 
 #[derive(Parser)]
 #[command(name = "folder_merge")]
@@ -17,11 +17,15 @@ struct Args {
 
     /// the destination folder
     dst: String,
-    
-    
+
     /// always create new folder
-    #[arg(long,short,default_value_t=false)]
+    #[arg(long, short, default_value_t = false)]
     create: bool,
+
+    /// the levenshtein threashhold
+    #[arg(long, short, default_value_t = 1)]
+    threshold: usize,
+
 }
 
 fn main() -> io::Result<()> {
@@ -34,42 +38,87 @@ fn main() -> io::Result<()> {
     // 创建一个映射表，用于存储文件夹 B 中每个子文件夹的所有可能匹配
     let matches: HashMap<String, Vec<String>> = src_folders
         .iter()
-        .map(|src_folder| (src_folder.clone(), find_possible_matches(src_folder, &dst_folders)))
+        .map(|src_folder| (src_folder.clone(), find_possible_matches(src_folder, &dst_folders, args.threshold)))
         .collect();
 
-    
+
+    let opt = CopyOptions::default()
+        .skip_exist(true);
+
+
     matches.iter()
-        .for_each(
-        |(src_folder, match_as)|
+        .for_each(|(src_folder, match_as)|
             {
                 if !match_as.is_empty() {
-                    let options: Vec<&str> = match_as.iter().map(String::as_str).chain(std::iter::once("跳过")).collect();
+                    let options: Vec<&str> = match_as.iter().map(String::as_str).chain(std::iter::once("Skip")).collect();
                     let selection = Select::new()
-                        .with_prompt("You can select one of the following options:")
-                        .with_prompt(options
-                            .iter().enumerate()
-                            .map(|(i, s)| format!("{}. {}", i, s))
-                            .collect::<Vec<String>>()
-                            .join("\n").to_string())
+                        .with_prompt(format!("Move {src_folder} to"))
+                        .items(&options[..])
                         .interact()
                         .expect("Failed to select an option");
-                        
+
                     if selection < match_as.len() {
                         let selected_match = &match_as[selection];
-                        merge_folders(&format!("{}/{}", args.src, src_folder), &format!("{}/{}", args.dst, selected_match)).expect("Failed to merge folders");
+
+                        let src_full_path = format!("{}/{}", args.src, src_folder);
+                        let dst_full_path = format!("{}/{}", args.dst, selected_match);
+
+
+                        let to_move = &extract_to_move(&src_full_path);
+                        move_files(&opt, &dst_full_path, to_move);
+
+
+                        clean(&src_full_path);
                     }
-                } else if args.create||Input::<bool>::new()
-                    .with_prompt(format!("Did not find a match for folder {} in folder B. Create a new folder?", src_folder))
+                } else if args.create || Confirm::new()
+                    .with_prompt(format!("Did not find a match for folder [{}] in [{}] Create a new folder?", src_folder, args.dst))
                     .interact()
                     .expect("Failed to read input") {
-                    let new_folder = format!("{}/{}", args.dst, src_folder);
-                    fs::create_dir_all(&new_folder).expect("Failed to create new folder");
-                    merge_folders(&format!("{}/{}", args.src, src_folder), &new_folder).expect("Failed to merge folders");
+                    let src_full_path = format!("{}/{}", args.src, src_folder);
+                    let dst_full_path = format!("{}/{}", args.dst, src_folder);
+                    fs::create_dir(&dst_full_path).expect("Failed to create folder");
+
+                    let to_move = &extract_to_move(&src_full_path);
+                    move_files(&opt, &dst_full_path, to_move);
+                    clean(&src_full_path);
                 }
-            }
-        );
+            });
 
     Ok(())
+}
+
+fn move_files(opt: &CopyOptions, dst_full_path: &String, to_move: &[PathBuf]) {
+    fs_extra::move_items_with_progress(to_move,
+                                       dst_full_path, opt,
+                                       |prog|
+                                           {
+                                               println!("Moving {} to {}", prog.file_name, dst_full_path);
+                                               fs_extra::dir::TransitProcessResult::ContinueOrAbort
+                                           })
+        .expect("Failed to merge folders");
+}
+
+fn extract_to_move(src_full_path: &String) -> Vec<PathBuf> {
+    WalkDir::new(src_full_path)
+        .min_depth(1)
+        .max_depth(2)
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(|en| en.into_path())
+        .collect::<Vec<_>>()
+}
+
+fn clean(src_full_path: &String) {
+    WalkDir::new(src_full_path)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>()
+        .is_empty()
+        .then(|| {
+            println!("Cleaning empty folder {src_full_path}");
+            fs::remove_dir_all(src_full_path)
+        });
 }
 
 fn get_subfolders(folder: &str) -> Vec<String> {
@@ -82,35 +131,11 @@ fn get_subfolders(folder: &str) -> Vec<String> {
         .collect()
 }
 
-fn find_possible_matches(folder_b: &str, folders_a: &[String]) -> Vec<String> {
-    let threshold = 3; // 设置一个距离阈值，根据实际情况调整
-
-    folders_a
+fn find_possible_matches(src: &str, matches: &[String], threshold: usize) -> Vec<String> {
+    matches
         .iter()
-        .filter(|folder_a| levenshtein(folder_b, folder_a) <= threshold)
+        .filter(|folder_a| levenshtein(src, folder_a) <= threshold)
         .cloned()
         .collect()
 }
 
-fn merge_folders(src: &str, dest: &str) -> io::Result<()> {
-    WalkDir::new(src)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .try_for_each(|entry| {
-            let src_path = entry.path();
-            let relative_path = src_path.strip_prefix(src).unwrap();
-            let dest_path = PathBuf::from(dest).join(relative_path);
-
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            fs_extra::move_items(
-                &[src_path],
-                dest_path,
-                &CopyOptions::new()
-            ).expect("Failed to move file");
-            Ok(())
-        })
-}
