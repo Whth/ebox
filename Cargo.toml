@@ -60,3 +60,7 @@ path = "src/bin/sufk.rs"
 [[bin]]
 name = "rstrip"
 path = "src/bin/rstrip.rs"
+
+[[bin]]
+name = "wprune"
+path = "src/bin/wprune.rs"
