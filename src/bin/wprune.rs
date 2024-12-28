@@ -79,7 +79,10 @@ fn main() -> io::Result<()> {
             // Remove specified patterns
             let mut cleaned_content = content;
             if remove_patterns {
-                cleaned_content = cleaned_content.replace("### ", "");
+                cleaned_content = cleaned_content
+                    .replace("### ", "")
+                    .replace("## ", "")
+                    .replace("# ", "");
             }
             if remove_stars {
                 cleaned_content = cleaned_content.replace("**", "");
