@@ -56,3 +56,7 @@ path = "src/bin/pmov.rs"
 [[bin]]
 name = "sufk"
 path = "src/bin/sufk.rs"
+
+[[bin]]
+name = "rstrip"
+path = "src/bin/rstrip.rs"

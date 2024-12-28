@@ -8,6 +8,7 @@ use std::path::PathBuf;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// The directory to search for files
+    #[arg(default_value = "./")]
     dir: PathBuf,
 
     /// The original file suffix to look for (e.g., pdf)
