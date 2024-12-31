@@ -33,50 +33,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let header_1_font = RunFonts::new().east_asia("FangSong_GB2312");
     let header_2_font = RunFonts::new().east_asia("SimHei");
 
+
     // Create a new DOCX document and add abstract numbering definitions
     let mut doc = Docx::default()
+        .add_style(Style::new("Heading 1", StyleType::Paragraph)
+            .name("Heading 1")
+            .bold()
+            .size(32)
+            .fonts(header_1_font.clone()))
+        .add_style(Style::new("Heading 2", StyleType::Paragraph)
+            .name("Heading 2")
+            .size(26)
+            .bold()
+            .fonts(header_2_font.clone()))
+        .add_style(Style::new("Heading 3", StyleType::Paragraph)
+            .name("Heading 3")
+            .size(24)
+            .bold()
+            .fonts(header_2_font.clone()))
         .add_abstract_numbering(
-            AbstractNumbering::new(1).add_level(
-                Level::new(
-                    0,
-                    Start::new(1),
-                    NumberFormat::new("decimal"),
-                    LevelText::new("%1."),
-                    LevelJc::new("left"),
+            AbstractNumbering::new(1)
+                .add_level(
+                    Level::new(
+                        0,
+                        Start::new(1),
+                        NumberFormat::new("decimal"),
+                        LevelText::new("%1."),
+                        LevelJc::new("left"),
+                    )
+                        .suffix(LevelSuffixType::Space)
+                        .indent(Some(0), Some(SpecialIndentType::Hanging(0)), Some(0), None)
+                        .bold()
+                        .paragraph_style("Heading 1")
+                        .is_lgl()
                 )
-                .bold()
-                .size(32)
-                .fonts(header_1_font.clone()),
-            ),
-        )
-        .add_numbering(Numbering::new(1, 1))
-        .add_abstract_numbering(
-            AbstractNumbering::new(2).add_level(
-                Level::new(
-                    0,
-                    Start::new(1),
-                    NumberFormat::new("decimal"),
-                    LevelText::new("%1.%2."),
-                    LevelJc::new("left"),
+                .add_level(
+                    Level::new(
+                        1,
+                        Start::new(1),
+                        NumberFormat::new("decimal"),
+                        LevelText::new("%1.%2"),
+                        LevelJc::new("left"),
+                    )
+                        .suffix(LevelSuffixType::Space)
+                        .indent(Some(0), Some(SpecialIndentType::Hanging(0)), Some(0), None)
+                        .paragraph_style("Heading 2")
+                        .is_lgl(),
                 )
-                .size(28)
-                .fonts(header_2_font.clone()),
-            ),
+                .add_level(
+                    Level::new(
+                        2,
+                        Start::new(1),
+                        NumberFormat::new("decimal"),
+                        LevelText::new("%1.%2.%3"),
+                        LevelJc::new("left"),
+                    )
+                        .suffix(LevelSuffixType::Space)
+                        .indent(Some(0), Some(SpecialIndentType::Hanging(0)), Some(0), None)
+                        .paragraph_style("Heading 3")
+                ),
         )
-        .add_numbering(Numbering::new(2, 2))
-        .add_abstract_numbering(
-            AbstractNumbering::new(3).add_level(
-                Level::new(
-                    0,
-                    Start::new(1),
-                    NumberFormat::new("decimal"),
-                    LevelText::new("%1.%2.%3."),
-                    LevelJc::new("left"),
-                )
-                .indent(Some(0), Some(SpecialIndentType::FirstLine(0)), None, None),
-            ),
-        )
-        .add_numbering(Numbering::new(3, 3));
+        .add_numbering(Numbering::new(1, 1));
 
     // Process each line in the input file
     let paragraphs: Vec<Paragraph> = reader
@@ -92,20 +109,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (Some(caps), _, _) => {
                     println!("{}", &caps[0]);
                     Paragraph::new()
-                        .add_run(Run::new().add_text(&caps[1]).fonts(header_1_font.clone()))
+                        .add_run(Run::new().add_text(&caps[1]).style("Heading 1"))
                         .numbering(NumberingId::new(1), IndentLevel::new(0))
+                        .outline_lvl(1)
                 }
                 (_, Some(caps), _) => {
                     println!("  {}", &caps[0]);
                     Paragraph::new()
-                        .add_run(Run::new().add_text(&caps[2]).fonts(header_2_font.clone()))
+                        .add_run(Run::new().add_text(&caps[2]).style("Heading 2"))
                         .numbering(NumberingId::new(2), IndentLevel::new(0))
+                        .outline_lvl(2)
                 }
                 (_, _, Some(caps)) => {
                     println!("    {}", &caps[0]);
                     Paragraph::new()
-                        .add_run(Run::new().add_text(&caps[3]))
+                        .add_run(Run::new().add_text(&caps[3]).style("Heading 3"))
                         .numbering(NumberingId::new(3), IndentLevel::new(0))
+                        .outline_lvl(3)
                 }
                 _ => {
                     // Add non-title lines as regular paragraphs
