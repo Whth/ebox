@@ -21,6 +21,8 @@ dialoguer = "0.11.0"
 fs_extra = "1.3.0"
 humansize = "2.1.3"
 regex = "1.11.1"
+docx-rs = "0.4.17"
+lopdf = { version = "0.34.0", features = ["image", "embed_image"] }
 
 
 [[bin]]
@@ -64,3 +66,12 @@ path = "src/bin/rstrip.rs"
 [[bin]]
 name = "wprune"
 path = "src/bin/wprune.rs"
+
+
+[[bin]]
+name = "pdfp"
+path = "src/bin/pdfp.rs"
+
+[[bin]]
+name = "bdocx"
+path = "src/bin/bdocx.rs"
