@@ -31,7 +31,7 @@ fn extract_images(input_path: &PathBuf, output_dir: &PathBuf, ext: &String) -> R
         .for_each(
             |id|
                 {
-                    save_page_images(input_path, ext, &doc, id);
+                    save_page_images(output_dir, ext, &doc, id);
                 }
         );
 
@@ -39,7 +39,7 @@ fn extract_images(input_path: &PathBuf, output_dir: &PathBuf, ext: &String) -> R
     Ok(())
 }
 
-fn save_page_images(input_path: &Path, ext: &String, doc: &Document, id: ObjectId) {
+fn save_page_images(out_dir: &Path, ext: &String, doc: &Document, id: ObjectId) {
     let mut ct = 0;
     doc.get_page_images(id)
         .expect("Failed to get page images")
@@ -47,7 +47,7 @@ fn save_page_images(input_path: &Path, ext: &String, doc: &Document, id: ObjectI
         .for_each(
             |img|
                 {
-                    let output_path = input_path.join(format!("{}-{ct}.{ext}", id.0));
+                    let output_path = out_dir.join(format!("{}-{ct}.{ext}", id.0));
                     let file = File::create(&output_path).expect("Failed to create output file");
                     let mut writer = BufWriter::new(file);
                     writer.write_all(img.content).expect("Failed to write to output file");
