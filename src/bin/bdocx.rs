@@ -1,5 +1,4 @@
 use clap::Parser;
-use docx_rs::BreakType::TextWrapping;
 use docx_rs::*;
 use regex::Regex;
 use std::fs::File;
@@ -155,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {
                     // Add non-title lines as regular paragraphs
                     Paragraph::new()
-                        .add_run(Run::new().add_text(line).add_break(TextWrapping))
+                        .add_run(Run::new().add_text(line))
                         .style("Main")
                 }
             }
