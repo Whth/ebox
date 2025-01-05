@@ -75,3 +75,7 @@ path = "src/bin/pdfp.rs"
 [[bin]]
 name = "bdocx"
 path = "src/bin/bdocx.rs"
+
+[[bin]]
+name = "onize"
+path = "src/bin/onize.rs"
