@@ -79,3 +79,7 @@ path = "src/bin/bdocx.rs"
 [[bin]]
 name = "onize"
 path = "src/bin/onize.rs"
+
+[[bin]]
+name = "rpl"
+path = "src/bin/rpl.rs"
