@@ -46,7 +46,9 @@ jobs:
         run: |
           cargo build --release
           
-          (cd target/release && zip -r ../../ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip . -i *.exe)
+          mkdir dist
+          cp target/release/*.exe dist
+          7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip dist/*
 
       - name: Create Release and upload assets
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
