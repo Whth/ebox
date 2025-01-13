@@ -27,19 +27,21 @@ jobs:
           LATEST_TAG=$(git describe --tags --abbrev=0 || true)
           echo "Latest tag is $LATEST_TAG"
           echo "Current version is ${{ steps.get_version.outputs.CURRENT_VERSION }}"
-          if [ -n "$LATEST_TAG" ]; then
-            LATEST_VERSION=${LATEST_TAG#v}
-            if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
+          if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
               echo "VERSION_CHANGED=true" >> $GITHUB_OUTPUT
             else
               echo "VERSION_CHANGED=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "No tags found, assuming first release."
-            echo "VERSION_CHANGED=true" >> $GITHUB_OUTPUT
           fi
         shell: bash
 
+
+      - name: Install dependencies with vcpkg
+        uses: johnwason/vcpkg-action@v6
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
+        with:
+          pkgs: 'ffmpeg'
+          triplet: 'x64-windows-release'
+          token: ${{ secrets.PAT }}
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
@@ -48,6 +50,7 @@ jobs:
           cargo build --release
           
           7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip target/release/*.exe
+        shell: bash
 
       - name: Create Release and upload assets
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
