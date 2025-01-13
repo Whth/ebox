@@ -34,13 +34,19 @@ jobs:
           fi
         shell: bash
 
-      - name: Install dependencies
-        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
 
+      - name: Install dependencies with vcpkg
+        uses: johnwason/vcpkg-action@v6
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
+        with:
+          pkgs: 'ffmpeg'
+          triplet: 'x64-windows-release'
+          token: ${{ secrets.PAT }}
+      - name: Install pkgconfiglite
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         uses: ConorMacBride/install-package@v1
         with:
           choco: pkgconfiglite
-
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
