@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  check-and-release:
+    runs-on: windows-latest # 使用 Windows 运行器
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # 注意：cargo-deb 是用于创建 Debian 包的工具，在 Windows 上通常不需要。
+      # 如果你确实需要它，可能需要找到一个等效的工具或脚本。
+
+      - name: Get current version
+        id: get_version
+        run: |
+          CURRENT_VERSION=$(grep '^version' Cargo.toml | cut -d '"' -f 2)
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Check if version has changed
+        id: check_version_change
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -n "$LATEST_TAG" ]; then
+            LATEST_VERSION=${LATEST_TAG#v}
+            if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
+              echo "VERSION_CHANGED=true" >> $GITHUB_OUTPUT
+            else
+              echo "VERSION_CHANGED=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "VERSION_CHANGED=true" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Build binaries
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
+        run: |
+          cargo build --release
+          # 打包所有二进制文件为一个压缩包
+          7z a ebox_binaries_${{ steps.get_version.outputs.CURRENT_VERSION }}.zip target/release/*
+        shell: cmd
+
+      - name: Create Release and upload assets
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.get_version.outputs.CURRENT_VERSION }}"
+          name: "Release v${{ steps.get_version.outputs.CURRENT_VERSION }}"
+          body: "This is an automated release of version ${{ steps.get_version.outputs.CURRENT_VERSION }}"
+          draft: false
+          prerelease: false
+          files: |
+            ebox_binaries_${{ steps.get_version.outputs.CURRENT_VERSION }}.zip
+
+      - name: Publish to crates.io (optional)
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
+        run: cargo publish --token ${CRATES_IO_TOKEN}
+        env:
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
