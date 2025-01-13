@@ -24,23 +24,21 @@ jobs:
       - name: Check if version has changed
         id: check_version_change
         run: |
-          $LATEST_TAG = git describe --tags --abbrev=0 2>$null
-          Write-Output "Latest tag is $LATEST_TAG"
-          Write-Output "Current version is ${{ steps.get_version.outputs.CURRENT_VERSION }}"
-          
-          if (-not [string]::IsNullOrEmpty($LATEST_TAG)) {
-            $LATEST_VERSION = $LATEST_TAG -replace '^v'
-          
-            if ($LATEST_VERSION -ne "${{ steps.get_version.outputs.CURRENT_VERSION }}") {
-              echo "VERSION_CHANGED=true" >> $env:GITHUB_OUTPUT
-            } else {
-              echo "VERSION_CHANGED=false" >> $env:GITHUB_OUTPUT
-            }
-          } else {
-            Write-Output "No tags found, assuming first release."
-            echo "VERSION_CHANGED=true" >> $env:GITHUB_OUTPUT
-          }
-        shell: pwsh
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+          echo "Latest tag is $LATEST_TAG"
+          echo "Current version is ${{ steps.get_version.outputs.CURRENT_VERSION }}"
+          if [ -n "$LATEST_TAG" ]; then
+            LATEST_VERSION=${LATEST_TAG#v}
+            if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
+              echo "VERSION_CHANGED=true" >> $GITHUB_OUTPUT
+            else
+              echo "VERSION_CHANGED=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No tags found, assuming first release."
+            echo "VERSION_CHANGED=true" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
 
 
       - name: Build binaries
