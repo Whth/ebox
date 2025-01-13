@@ -13,17 +13,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      # 注意：cargo-deb 是用于创建 Debian 包的工具，在 Windows 上通常不需要。
-      # 如果你确实需要它，可能需要找到一个等效的工具或脚本。
-
       - name: Get current version
         id: get_version
         run: |
