@@ -1,13 +1,13 @@
 [package]
 name = "ebox"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.20", features = ["derive", "env", "string", "unicode"] }
 chrono = "0.4.38"
 walkdir = "2.5.0"
-ffmpeg-next = { version = "7.1.0" }
+ffmpeg-next = { version = "7.1.0", features = ["static"] }
 rayon = "1.10.0"
 tokio = { version = "1.41.1", features = ["full"] }
 futures = "0.3.31"

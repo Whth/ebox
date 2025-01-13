@@ -39,7 +39,7 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         with:
-          pkgs: 'ffmpeg'
+          pkgs: 'ffmpeg[all]'
           triplet: 'x64-windows-release'
           token: ${{ secrets.PAT }}
       - name: Install pkgconfiglite
