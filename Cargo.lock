@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "ebox"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-openai",
  "chrono",
