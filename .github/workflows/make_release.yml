@@ -56,6 +56,11 @@ jobs:
           
           7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip target/release/*.exe
         shell: bash
+        env:
+          PKG_CONFIG_ALLOW_SYSTEM_LIBS: 1
+          PKG_CONFIG_ALLOW_SYSTEM_CFLAGS: 1
+
+
 
       - name: Create Release and upload assets
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
