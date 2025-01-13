@@ -40,12 +40,24 @@ jobs:
           fi
         shell: bash
 
+      # Add caching of Cargo dependencies here
+      - name: Cache Cargo packages
+        uses: actions/cache@v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         run: |
           cargo build --release
-          7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip target/release/*.exe
-        shell: pwsh
+          
+          (cd target/release && zip -r ../../ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip . -i *.exe)
+        shell: bash
 
       - name: Create Release and upload assets
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
