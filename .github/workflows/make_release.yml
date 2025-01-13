@@ -57,4 +57,4 @@ jobs:
           files: |
             ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
