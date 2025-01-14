@@ -1,4 +1,4 @@
-name: CI
+name: Build and Release
 
 on:
   push:
@@ -13,6 +13,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install deps
+        uses: winpax/scoop-setup@v1.0.0
+        with:
+          apps: vcpkg pkg-config ffmpeg-shared
+
+      - name: Build binaries
+        run: |
+          mkdir dist
+          make DISPATCH_DIR=dist
+
 
       - name: Get current version
         id: get_version
@@ -31,29 +42,17 @@ jobs:
           LATEST_TAG=${{ steps.tag.outputs.latestTag  }}
           echo "Latest tag is $LATEST_TAG"
           echo "Current version is ${{ steps.get_version.outputs.CURRENT_VERSION }}"
-          if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
+          if [ "$LATEST_TAG" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
               echo "VERSION_CHANGED=true" >> $GITHUB_OUTPUT
             else
               echo "VERSION_CHANGED=false" >> $GITHUB_OUTPUT
           fi
         shell: bash
 
-      - name: Install deps
-        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
-        uses: winpax/scoop-setup@v1.0.0
-        with:
-          apps: vcpkg pkg-config ffmpeg-shared
-
-      - name: Build binaries
-        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
-        run: |
-          mkdir dist
-          make DISPATCH_DIR=dist
-
       - name: Packing
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         run: |
-          7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip dist/*.exe
+          7z a ebox_${{ steps.get_version.outputs.CURRENT_VERSION }}.zip dist/*.exe
 
       - name: Create Release and upload assets
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
@@ -63,6 +62,6 @@ jobs:
           tag_name: ${{ steps.get_version.outputs.CURRENT_VERSION }}
           name: ${{ steps.get_version.outputs.CURRENT_VERSION }}
           files: |
-            ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip
+            ebox_${{ steps.get_version.outputs.CURRENT_VERSION }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
