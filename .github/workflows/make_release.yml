@@ -9,7 +9,7 @@ jobs:
   check-and-release:
     runs-on: windows-latest
     env:
-      FFMPEG_DIR: ~\scoop\apps\ffmpeg-shared\current
+      FFMPEG_DIR: C:\Users\runneradmin\scoop\apps\ffmpeg-shared\current
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -42,14 +42,7 @@ jobs:
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         uses: winpax/scoop-setup@v1.0.0
         with:
-          apps: vcpkg pkg-config llvm ffmpeg-shared
-
-      - name: Add path
-        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
-        run:
-          echo "add $FFMPEG_DIR\bin to PATH"
-          echo "$FFMPEG_DIR\bin" >> $GITHUB_PATH
-        shell: bash
+          apps: vcpkg pkg-config ffmpeg-shared
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
