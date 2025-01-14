@@ -8,7 +8,8 @@ on:
 jobs:
   check-and-release:
     runs-on: windows-latest
-
+    env:
+      FFMPEG_DIR: C:\ProgramData\scoop\apps\ffmpeg-shared\current
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,7 +25,7 @@ jobs:
       - name: Check if version has changed
         id: check_version_change
         run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 || true)
+          LATEST_TAG=$(git tag --sort=version:refname | tail -n 1)
           echo "Latest tag is $LATEST_TAG"
           echo "Current version is ${{ steps.get_version.outputs.CURRENT_VERSION }}"
           if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
@@ -39,18 +40,21 @@ jobs:
         with:
           apps: vcpkg pkg-config llvm ffmpeg-shared
 
+      - name: Add path
+        run:
+          echo "$FFMPEG_DIR\bin" >> $GITHUB_PATH
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         run: |
-          export PATH=$PATH:$FFMPEG_DIR\bin
-          cargo build --release
-          7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip target/release/*.exe
+          mkdir dist
+          make DISPATCH_DIR=dist
         shell: bash
-        env:
-          FFMPEG_DIR: C:\ProgramData\scoop\apps\ffmpeg-shared\current
 
-
+      - name: Packing
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
+        run: |
+          7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip dist/*
 
       - name: Create Release and upload assets
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
