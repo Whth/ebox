@@ -39,14 +39,20 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         with:
-          pkgs: 'ffmpeg[all]'
           triplet: 'x64-windows-release'
           token: ${{ secrets.PAT }}
+
       - name: Install pkgconfiglite
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         uses: ConorMacBride/install-package@v1
         with:
           choco: pkgconfiglite
+
+
+      - name: Install ffmpeg-shared
+        uses: winpax/scoop-setup@v1.0.0
+        with:
+          apps: ffmpeg-shared
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
@@ -56,9 +62,7 @@ jobs:
           
           7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip target/release/*.exe
         shell: bash
-        env:
-          PKG_CONFIG_ALLOW_SYSTEM_LIBS: 1
-          PKG_CONFIG_ALLOW_SYSTEM_CFLAGS: 1
+
 
 
 
