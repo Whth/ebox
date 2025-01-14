@@ -1,4 +1,4 @@
 ## Ebox
 ---
 
-A bunches of toys
+A bunch of toys
