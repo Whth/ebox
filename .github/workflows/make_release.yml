@@ -9,7 +9,7 @@ jobs:
   check-and-release:
     runs-on: windows-latest
     env:
-      FFMPEG_DIR: C:\ProgramData\scoop\apps\ffmpeg-shared\current
+      FFMPEG_DIR: ~\scoop\apps\ffmpeg-shared\current
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,7 +18,7 @@ jobs:
         id: get_version
         run: |
           CURRENT_VERSION=$(grep '^version' Cargo.toml | cut -d '"' -f 2)
-          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "CURRENT_VERSION=v$CURRENT_VERSION" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Get latest tag
@@ -47,6 +47,7 @@ jobs:
       - name: Add path
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         run:
+          echo "add $FFMPEG_DIR\bin to PATH"
           echo "$FFMPEG_DIR\bin" >> $GITHUB_PATH
         shell: bash
 
@@ -66,8 +67,8 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v${{ steps.get_version.outputs.CURRENT_VERSION }}"
-          name: "v${{ steps.get_version.outputs.CURRENT_VERSION }}"
+          tag_name: ${{ steps.get_version.outputs.CURRENT_VERSION }}
+          name: ${{ steps.get_version.outputs.CURRENT_VERSION }}
           files: |
             ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip
         env:
