@@ -37,7 +37,7 @@ jobs:
       - name: Install ffmpeg-shared
         uses: winpax/scoop-setup@v1.0.0
         with:
-          apps: ffmpeg-shared
+          apps: ffmpeg-shared vcpkg pkg-config-lite
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
