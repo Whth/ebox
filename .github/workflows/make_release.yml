@@ -22,13 +22,13 @@ jobs:
         shell: bash
 
       - name: Get latest tag
-        uses: actions-ecosystem/action-get-latest-tag@v1
-        id: get-latest-tag
+        uses: JinoArch/get-latest-tag@latest
+        id: tag
 
       - name: Check if version has changed
         id: check_version_change
         run: |
-          LATEST_TAG=${{ steps.get-latest-tag.outputs.tag }}
+          LATEST_TAG=${{ steps.tag.outputs.latestTag  }}
           echo "Latest tag is $LATEST_TAG"
           echo "Current version is ${{ steps.get_version.outputs.CURRENT_VERSION }}"
           if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
