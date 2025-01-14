@@ -19,13 +19,16 @@ jobs:
         run: |
           CURRENT_VERSION=$(grep '^version' Cargo.toml | cut -d '"' -f 2)
           echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
         shell: bash
+
+      - name: Get latest tag
+        uses: actions-ecosystem/action-get-latest-tag@v1
+        id: get-latest-tag
 
       - name: Check if version has changed
         id: check_version_change
         run: |
-          LATEST_TAG=$(git tag --sort=version:refname | tail -n 1)
+          LATEST_TAG=${{ steps.get-latest-tag.outputs.tag }}
           echo "Latest tag is $LATEST_TAG"
           echo "Current version is ${{ steps.get_version.outputs.CURRENT_VERSION }}"
           if [ "$LATEST_VERSION" != "${{ steps.get_version.outputs.CURRENT_VERSION }}" ]; then
@@ -36,20 +39,22 @@ jobs:
         shell: bash
 
       - name: Install deps
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         uses: winpax/scoop-setup@v1.0.0
         with:
           apps: vcpkg pkg-config llvm ffmpeg-shared
 
       - name: Add path
+        if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         run:
           echo "$FFMPEG_DIR\bin" >> $GITHUB_PATH
+        shell: bash
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         run: |
           mkdir dist
           make DISPATCH_DIR=dist
-        shell: bash
 
       - name: Packing
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
