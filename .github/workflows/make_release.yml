@@ -34,15 +34,10 @@ jobs:
           fi
         shell: bash
 
-      - name: Install scoop
+      - name: Install deps
         uses: winpax/scoop-setup@v1.0.0
         with:
-          apps: vcpkg pkg-config
-
-      - name: install ffmpeg
-        run: |
-          scoop bucket add mine "https://github.com/Whth/scoopet-Q"
-          scoop install mine/ffmpeg-shared --global
+          apps: vcpkg pkg-config ffmpeg-shared
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
@@ -52,6 +47,9 @@ jobs:
           
           7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip target/release/*.exe
         shell: bash
+        env:
+          FFMPEG_DIR: C:\ProgramData\scoop\apps\ffmpeg-shared\current
+
 
 
 
