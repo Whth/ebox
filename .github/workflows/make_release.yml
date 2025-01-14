@@ -34,10 +34,15 @@ jobs:
           fi
         shell: bash
 
-      - name: Install ffmpeg-shared
+      - name: Install scoop
         uses: winpax/scoop-setup@v1.0.0
         with:
-          apps: ffmpeg-shared vcpkg pkg-config
+          apps: vcpkg pkg-config
+
+      - name: install ffmpeg
+        run: |
+          scoop bucket add mine "https://github.com/Whth/scoopet-Q"
+          scoop install mine/ffmpeg-shared --global
 
       - name: Build binaries
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
