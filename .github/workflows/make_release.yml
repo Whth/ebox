@@ -53,7 +53,7 @@ jobs:
       - name: Packing
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
         run: |
-          7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip dist/*
+          7z a ebox_v${{ steps.get_version.outputs.CURRENT_VERSION }}.zip dist/*.exe
 
       - name: Create Release and upload assets
         if: ${{ steps.check_version_change.outputs.VERSION_CHANGED == 'true' }}
