@@ -1,6 +1,6 @@
 [package]
 name = "ebox"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [dependencies]
@@ -121,3 +121,7 @@ path = "src/bin/vlc/main.rs"
 [[bin]]
 name = "reduce"
 path = "src/bin/reduce.rs"
+
+[[bin]]
+name = "pls"
+path = "src/bin/pls.rs"
