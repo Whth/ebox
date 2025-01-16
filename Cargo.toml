@@ -36,6 +36,7 @@ clap-verbosity-flag = "3.0.2"
 env_logger = "0.11.6"
 colored = "3.0.0"
 indicatif = { version = "0.17.9", features = ["rayon"] }
+hound = "3.5.1"
 
 [[bin]]
 name = "vmd"
@@ -135,3 +136,8 @@ path = "src/bin/pam.rs"
 [[bin]]
 name = "xect"
 path = "src/bin/xect.rs"
+
+
+[[bin]]
+name = "aupr"
+path = "src/bin/aupr.rs"
