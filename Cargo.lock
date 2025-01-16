@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "ebox"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-openai",
  "chrono",
@@ -865,6 +865,7 @@ dependencies = [
  "humansize",
  "image 0.25.5",
  "log",
+ "mime_guess",
  "num_cpus",
  "prettytable",
  "rand",
