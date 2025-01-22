@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
+use indicatif::{ParallelProgressIterator, ProgressFinish, ProgressStyle};
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::fs;
+use std::fs::read_dir;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -109,21 +112,53 @@ fn eradicate(output: &Option<PathBuf>, input_dirs: &[PathBuf]) -> io::Result<()>
 
 fn merge(cut: bool, verbose: bool, output: &PathBuf, input_dirs: &[PathBuf]) -> io::Result<()> {
     fs::create_dir_all(output)?;
+    println!("Merging merge {:?} into {:?}", input_dirs, output);
 
-    get_multimedia(input_dirs)
+    let files = get_multimedia(input_dirs);
+    println!("💡 Found {} files", files.len());
+    files
         .iter()
         .par_bridge()
-        .filter(|&entry| should_process_file(entry, output, verbose))
-        .try_for_each(|path| {
-            let new_path = output.join(path.file_name().unwrap());
-
+        .progress_count(files.len() as u64)
+        .with_finish(ProgressFinish::WithMessage(Cow::from("Done")))
+        .with_style(ProgressStyle::with_template("{spinner:.green} [{elapsed}/{duration}] [{bar:40.green/blue}] {msg} {pos}/{len} ({per_sec})").unwrap())
+        .map(|path| (path.clone(), path
+            .parent()
+            .expect("Failed to get parent directory")
+            .file_name()
+            .expect("Failed to get file name")
+            .to_string_lossy()
+            .split('_')
+            .last()
+            .expect("Failed to get artist ID")
+            .to_owned()
+        ))
+        .map(|(p, artist_id)| (p.clone(), read_dir(output)
+            .expect("Failed to read directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(artist_id.as_str()))
+            .last()
+            .map(|entry| entry.path())
+            .unwrap_or(output.join(
+                p
+                    .parent()
+                    .expect("Failed to get parent directory")
+                    .file_name()
+                    .expect("Failed to get file name")
+                    .to_owned())
+            ))
+        )
+        .filter(|(src, out)| should_process_file(src, &out, verbose))
+        .try_for_each(|(path, out_dir)| {
+            let new_path = out_dir.join(path.file_name().unwrap());
+            fs::create_dir_all(&out_dir)?;
             if cut {
                 if let Err(_) = fs::rename(&path, &new_path) {
-                    fs::copy(&path, &new_path)?;
-                    fs::remove_file(&path)?;
+                    fs::copy(&path, &new_path).expect("Failed to rename file");
+                    fs::remove_file(&path).expect("Failed to remove file");
                 }
             } else {
-                fs::copy(&path, &new_path)?;
+                fs::copy(&path, &new_path).expect("Failed to copy file");
             }
             if verbose {
                 println!("Processed {:?}", path);
@@ -166,9 +201,15 @@ fn is_image_or_video(path: &PathBuf) -> bool {
 fn get_multimedia(dir_path: &[PathBuf]) -> Vec<PathBuf> {
     dir_path
         .iter()
+        .par_bridge()
+        .progress_count(dir_path.len() as u64)
         .filter(|dir| dir.is_dir())
-        .flat_map(|dir| fs::read_dir(dir))
-        .flatten()
+        .filter_map(|dir| dir.read_dir().ok())
+        .flatten_iter()
+        .filter_map(|entry| entry.ok().and_then(|entry| Some(entry.path())))
+        .filter_map(|entry| entry.is_dir().then_some(read_dir(entry)))
+        .filter_map(|dir| dir.ok())
+        .flatten_iter()
         .filter_map(|entry| entry.ok())
         .filter(|entry| is_image_or_video(&entry.path()))
         .map(|entry| entry.path())

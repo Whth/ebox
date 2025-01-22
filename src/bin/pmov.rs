@@ -1,7 +1,8 @@
 use clap::Parser;
+use indicatif::ParallelProgressIterator;
+use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-
 #[derive(Debug)]
 struct Bucket {
     min_size: usize,
@@ -35,13 +36,19 @@ impl Bucket {
         self
     }
 
-    fn dump_to(&mut self, path: &Path, clear: bool) -> &Self {
-        for dir_path in &self.dir_paths {
-            fs::rename(dir_path, path.join(dir_path.file_name().expect("Invalid path"))).expect("Failed to rename directory");
-        }
-        if clear {
-            self.clear();
-        }
+    fn dump_to(&mut self, path: &PathBuf, clear: bool) -> &Self {
+        self.dir_paths
+            .iter()
+            .par_bridge()
+            .progress_count(self.dir_paths.len() as u64)
+            .for_each(
+                |dir_path| {
+                    fs_extra::move_items(&[dir_path], &path, &fs_extra::dir::CopyOptions::new()
+                        .skip_exist(true))
+                        .expect("Failed to copy directory");
+                },
+            );
+        clear.then(|| self.clear());
         self
     }
 }
