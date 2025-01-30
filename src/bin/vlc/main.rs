@@ -103,8 +103,7 @@ fn main() {
     };
 
     let mut map: HashMap<String, Vec<StringRecord>> = HashMap::new();
-    for record_raw in reader.records() {
-        let record = record_raw.unwrap();
+    for record in reader.records().filter_map(|r| r.ok()) {
         let duration = if let Some(du) = record[pos].as_duration() {
             du
         } else {
