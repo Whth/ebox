@@ -8,38 +8,49 @@ use std::path::PathBuf;
 #[command(author)]
 struct Cli {
     /// Specifies the input directory where files and directories will be processed.
+    ///
     /// - Command-line Flags: `-i`, `--input-dir`
-    /// - Default Value: Current working directory (`./`)
+    ///
     /// - Value Parser: Uses the default value parser provided by `clap`
     #[arg(short, long, default_value = "./")]
     input_dir: PathBuf,
 
     /// Specifies the output directory where processed files and directories will be moved.
+    ///
     /// - Command-line Flags: `-o`, `--output-dir`
-    /// - Default Value: Current working directory (`./`)
+    ///
     /// - Value Parser: Uses the default value parser provided by `clap`
     #[arg(short, long, default_value = "./")]
     output_dir: PathBuf,
 
     /// Defines the depth level to which the program should traverse subdirectories.
+    ///
     /// A depth of `1` means only the immediate contents of the input directory are processed.
+    ///
     /// - Command-line Flags: `-d`, `--depth`
-    /// - Default Value: `1`
+    ///
     #[arg(short, long, default_value_t = 1)]
     depth: u32,
 
     /// Determines how the program handles file or directory collisions during the move operation.
+    ///
     /// Available strategies are:
+    ///
     /// - `auto`: Automatically renames the destination file or directory if a collision occurs.
+    ///
     /// - `override`: Overwrites the existing file or directory at the destination.
+    ///
     /// - `halt`: Stops execution if a collision is detected.
+    ///
     /// - Command-line Flags: `-c`, `--collision-strategy`
-    /// - Default Value: `"auto"`
+    ///
     #[arg(short, long, default_value = "auto")]
     collision_strategy: String,
 
     /// Enables verbose mode, providing detailed output about the operations being performed.
+    ///
     /// - Command-line Flags: `-v`, `--verbose`
+    ///
     /// - Action: Flagged presence sets this to `true`; absence sets it to `false`.
     #[arg(short, long, action)]
     verbose: bool,
