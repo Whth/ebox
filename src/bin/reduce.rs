@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::fs::{self};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A command-line tool for reducing the depth of a directory hierarchy.
 #[derive(Parser)]
@@ -8,27 +8,16 @@ use std::path::PathBuf;
 #[command(author)]
 struct Cli {
     /// Specifies the input directory where files and directories will be processed.
-    ///
-    /// - Command-line Flags: `-i`, `--input-dir`
-    ///
-    /// - Value Parser: Uses the default value parser provided by `clap`
     #[arg(short, long, default_value = "./")]
     input_dir: PathBuf,
 
     /// Specifies the output directory where processed files and directories will be moved.
-    ///
-    /// - Command-line Flags: `-o`, `--output-dir`
-    ///
-    /// - Value Parser: Uses the default value parser provided by `clap`
     #[arg(short, long, default_value = "./")]
     output_dir: PathBuf,
 
     /// Defines the depth level to which the program should traverse subdirectories.
     ///
     /// A depth of `1` means only the immediate contents of the input directory are processed.
-    ///
-    /// - Command-line Flags: `-d`, `--depth`
-    ///
     #[arg(short, long, default_value_t = 1)]
     depth: u32,
 
@@ -41,32 +30,42 @@ struct Cli {
     /// - `override`: Overwrites the existing file or directory at the destination.
     ///
     /// - `halt`: Stops execution if a collision is detected.
-    ///
-    /// - Command-line Flags: `-c`, `--collision-strategy`
-    ///
     #[arg(short, long, default_value = "auto")]
     collision_strategy: String,
 
-    /// Enables verbose mode, providing detailed output about the operations being performed.
+    /// Includes hidden files and directories in the reduction process.
     ///
-    /// - Command-line Flags: `-v`, `--verbose`
+    /// - Action: Flagged presence sets this to `true`; absence sets it to `false`.
+    #[arg(short = 'k', long, action)]
+    include_hidden: bool,
+
+    /// Enables verbose mode, providing detailed output about the operations being performed.
     ///
     /// - Action: Flagged presence sets this to `true`; absence sets it to `false`.
     #[arg(short, long, action)]
     verbose: bool,
 }
 
-fn rename_if_exists(path: &PathBuf) -> PathBuf {
+fn rename_if_exists(path: &Path) -> PathBuf {
     let mut i = 1;
-    let mut new_path = path.clone();
+    let mut new_path = path.to_path_buf();
     while new_path.exists() {
-        new_path.set_file_name(format!("{}_{}", path.file_stem().unwrap().to_string_lossy(), i));
+        new_path.set_file_name(format!(
+            "{}_{}",
+            path.file_stem().unwrap().to_string_lossy(),
+            i
+        ));
         new_path.set_extension(path.extension().unwrap_or_default());
         i += 1;
     }
     new_path
 }
-fn handle_collision(src_path: &PathBuf, dest_path: &PathBuf, collision_strategy: &str, verbose: bool) -> Option<PathBuf> {
+fn handle_collision(
+    src_path: &PathBuf,
+    dest_path: &PathBuf,
+    collision_strategy: &str,
+    verbose: bool,
+) -> Option<PathBuf> {
     match collision_strategy.to_lowercase().as_str() {
         "auto" => auto_strategy(src_path, dest_path, verbose),
         "override" => override_strategy(dest_path, verbose),
@@ -78,7 +77,11 @@ fn handle_collision(src_path: &PathBuf, dest_path: &PathBuf, collision_strategy:
 fn auto_strategy(src_path: &PathBuf, dest_path: &PathBuf, verbose: bool) -> Option<PathBuf> {
     if dest_path.exists() && src_path.canonicalize().ok() == dest_path.canonicalize().ok() {
         if verbose {
-            println!("Skipping {} as it matches {}.", src_path.display(), dest_path.display());
+            println!(
+                "Skipping {} as it matches {}.",
+                src_path.display(),
+                dest_path.display()
+            );
         }
         return None;
     }
@@ -86,7 +89,11 @@ fn auto_strategy(src_path: &PathBuf, dest_path: &PathBuf, verbose: bool) -> Opti
     if dest_path.exists() {
         let new_dest_path = rename_if_exists(dest_path);
         if verbose {
-            println!("Renaming {} to {} to avoid collision.", dest_path.display(), new_dest_path.display());
+            println!(
+                "Renaming {} to {} to avoid collision.",
+                dest_path.display(),
+                new_dest_path.display()
+            );
         }
         Some(new_dest_path)
     } else {
@@ -107,7 +114,10 @@ fn override_strategy(dest_path: &PathBuf, verbose: bool) -> Option<PathBuf> {
             fs::remove_file(dest_path).expect("Failed to remove file");
         }
         if verbose {
-            println!("Overriding {} with a new file or directory.", dest_path.display());
+            println!(
+                "Overriding {} with a new file or directory.",
+                dest_path.display()
+            );
         }
     }
     Some(dest_path.to_path_buf())
@@ -119,39 +129,63 @@ fn resolve_move(src_path: &PathBuf, dest_path: &PathBuf, verbose: bool) {
     }
 }
 
-fn move_dir_content(src_dir: &PathBuf, dest_dir_path: &PathBuf, verbose: bool, strategy: &str) {
+fn move_dir_content(
+    src_dir: &PathBuf,
+    dest_dir_path: &PathBuf,
+    verbose: bool,
+    strategy: &str,
+    include_hidden: bool,
+) {
     fs::read_dir(src_dir)
         .expect("Failed to read directory")
         .filter_map(Result::ok)
+        .filter(|e| include_hidden || !e.file_name().to_string_lossy().starts_with('.'))
         .for_each(|entry| {
             let dest_f = dest_dir_path.join(entry.file_name());
-            if let Some(handled_dest) = handle_collision(&entry.path(), &dest_f, strategy, verbose) {
+            if let Some(handled_dest) = handle_collision(&entry.path(), &dest_f, strategy, verbose)
+            {
                 resolve_move(&entry.path(), &handled_dest, verbose);
             }
         });
 }
 
 fn is_directory_empty(directory: &PathBuf) -> bool {
-    fs::read_dir(directory).map(|mut entries| entries.next().is_none()).unwrap_or(false)
+    fs::read_dir(directory)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false)
 }
 
-fn expand_directories(input_dir: &PathBuf, output_dir: &PathBuf, depth: u32, collision_strategy: &str, verbose: bool) {
+fn expand_directories(
+    input_dir: &PathBuf,
+    output_dir: &Path,
+    depth: u32,
+    collision_strategy: &str,
+    include_hidden: bool,
+    verbose: bool,
+) {
     let initial_depth = depth;
-    let mut queue = vec![(input_dir.clone(), output_dir.clone(), initial_depth)];
+    let mut queue = vec![(input_dir.clone(), output_dir, initial_depth)];
 
     while let Some((current_input_dir, current_output_dir, current_depth)) = queue.pop() {
         if current_depth == 0 {
-            move_dir_content(&current_input_dir, &current_output_dir, verbose, collision_strategy);
+            move_dir_content(
+                &current_input_dir,
+                &current_output_dir.to_path_buf(),
+                verbose,
+                collision_strategy,
+                include_hidden,
+            );
         } else {
             let dirs_to_move: Vec<_> = fs::read_dir(&current_input_dir)
                 .expect("Failed to read directory")
                 .filter_map(Result::ok)
                 .filter(|e| e.path().is_dir())
+                .filter(|e| include_hidden || !e.file_name().to_string_lossy().starts_with('.'))
                 .collect();
 
             let remaining_depth = current_depth - 1;
             for dir in dirs_to_move {
-                queue.push((dir.path(), current_output_dir.clone(), remaining_depth));
+                queue.push((dir.path(), current_output_dir, remaining_depth));
             }
         }
     }
@@ -161,7 +195,7 @@ fn expand_directories(input_dir: &PathBuf, output_dir: &PathBuf, depth: u32, col
         .filter_map(Result::ok)
         .filter(|entry| entry.path().is_dir() && is_directory_empty(&entry.path()))
         .for_each(|entry| {
-            fs::remove_dir_all(&entry.path()).expect("Failed to clean directory");
+            fs::remove_dir_all(entry.path()).expect("Failed to clean directory");
             if verbose {
                 println!("Cleaning {}", entry.path().display());
             }
@@ -176,8 +210,12 @@ fn main() {
         return;
     }
 
-    expand_directories(&cli.input_dir, &cli.output_dir, cli.depth, &cli.collision_strategy, cli.verbose);
+    expand_directories(
+        &cli.input_dir,
+        &cli.output_dir,
+        cli.depth,
+        &cli.collision_strategy,
+        cli.include_hidden,
+        cli.verbose,
+    );
 }
-
-
-
