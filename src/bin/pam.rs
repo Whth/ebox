@@ -49,13 +49,31 @@ enum Commands {
     },
 }
 
+
+fn glob_dir(p: &PathBuf) -> Vec<PathBuf> {
+    glob::glob(p.to_str().unwrap())
+        .map_err(
+            |e| (e, format!("Failed to read directory {:?}", p))
+        )
+        .ok()
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.is_dir())
+        .collect()
+}
+
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
         Commands::Audit { min_count, input_dir } => audit(input_dir, *min_count),
-        Commands::Eradicate { output, input_dirs } => eradicate(output, input_dirs),
-        Commands::Merge { cut, verbose, output, input_dirs } => merge(*cut, *verbose, output, input_dirs),
+        Commands::Eradicate { output, input_dirs } => {
+            eradicate(output, input_dirs.iter().flat_map(glob_dir).collect::<Vec<PathBuf>>().as_slice())
+        }
+        Commands::Merge { cut, verbose, output, input_dirs } => {
+            merge(*cut, *verbose, output, input_dirs
+                .iter().flat_map(glob_dir).collect::<Vec<PathBuf>>().as_slice())
+        }
     }
 }
 
@@ -65,7 +83,7 @@ fn audit(input_dir: &Path, min_count: u32) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::Other, format!("Input directory {:?} does not exist or is not a directory.", input_dir)));
     }
 
-    fs::read_dir(input_dir)
+    read_dir(input_dir)
         .expect("Failed to read directory")
         .par_bridge()
         .filter_map(|entry| entry.ok())
@@ -96,9 +114,9 @@ fn eradicate(output: &Option<PathBuf>, input_dirs: &[PathBuf]) -> io::Result<()>
                 fs::create_dir_all(output_dir)?;
                 // Move the file to the output directory
                 let new_path = output_dir.join(path.file_name().unwrap());
-                if let Err(_) = fs::rename(&path, &new_path) {
-                    fs::copy(&path, &new_path)?;
-                    fs::remove_file(&path)?;
+                if fs::rename(path, &new_path).is_err() {
+                    fs::copy(path, &new_path)?;
+                    fs::remove_file(path)?;
                 }
             } else {
                 // Delete the file if no output directory is specified
@@ -144,8 +162,7 @@ fn merge(cut: bool, verbose: bool, output: &PathBuf, input_dirs: &[PathBuf]) -> 
                     .parent()
                     .expect("Failed to get parent directory")
                     .file_name()
-                    .expect("Failed to get file name")
-                    .to_owned())
+                    .expect("Failed to get file name"))
             ))
         )
         .filter(|(src, out)| should_process_file(src, &out, verbose))
@@ -206,7 +223,7 @@ fn get_multimedia(dir_path: &[PathBuf]) -> Vec<PathBuf> {
         .filter(|dir| dir.is_dir())
         .filter_map(|dir| dir.read_dir().ok())
         .flatten_iter()
-        .filter_map(|entry| entry.ok().and_then(|entry| Some(entry.path())))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter_map(|entry| entry.is_dir().then_some(read_dir(entry)))
         .filter_map(|dir| dir.ok())
         .flatten_iter()
