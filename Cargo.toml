@@ -1,6 +1,6 @@
 [package]
 name = "ebox"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
 
 [dependencies]
@@ -150,3 +150,8 @@ path = "src/bin/cpr.rs"
 [[bin]]
 name = "startups"
 path = "src/bin/startups.rs"
+
+
+[[bin]]
+name = "bpdf"
+path = "src/bin/bpdf.rs"
