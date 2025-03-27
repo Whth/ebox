@@ -38,6 +38,7 @@ colored = "3.0.0"
 indicatif = { version = "0.17.9", features = ["rayon"] }
 hound = "3.5.1"
 mslnk = "0.1.8"
+anyhow = "1.0.97"
 
 [[bin]]
 name = "vmd"

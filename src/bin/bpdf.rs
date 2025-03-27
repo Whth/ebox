@@ -1,4 +1,6 @@
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use rayon::prelude::*;
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,20 +19,24 @@ struct Cli {
     output: PathBuf,
 
     /// Maximum number of files per chunk
-    #[arg(short, long, default_value_t = 10)]
+    #[arg(short, long, default_value_t = 30)]
     chunk_size: usize,
+
+    /// Number of threads to use for processing
+    #[arg(short, long, default_value_t = 1)]
+    thread: usize,
 
     /// Enable verbose logging
     #[arg(short, long, action)]
     verbose: bool,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
     run(cli)
 }
 
-fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn run(cli: Cli) -> Result<()> {
     // Ensure output directory exists
     create_dir_all(&cli.output)?;
 
@@ -60,46 +66,52 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn collect_pdf_files(cli: &Cli) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+fn collect_pdf_files(cli: &Cli) -> Result<Vec<PathBuf>> {
     if cli.path.is_file() {
         if cli.path.extension().map_or(false, |ext| ext == "pdf") {
             Ok(vec![cli.path.clone()])
         } else {
-            Err("Specified file is not a PDF".into())
+            Err(anyhow!(
+                "Invalid path. Please provide a valid PDF file or directory: {}",
+                cli.path.display()
+            ))
         }
     } else {
         Ok(find_pdf_files(&cli.path))
     }
 }
 
-fn process_chunks(chunks: &[Vec<PathBuf>], cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    for (i, chunk) in chunks.iter().enumerate() {
-        let chunk_dir = cli.output.join(format!("chunk_{}", i + 1));
-        create_dir_all(&chunk_dir)?;
+fn process_chunks(chunks: &[Vec<PathBuf>], cli: &Cli) -> Result<()> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(cli.thread)
+        .build()?;
 
-        log_verbose(
-            cli,
-            &format!("Processing chunk {} with {} files", i + 1, chunk.len()),
-        );
+    pool.install(|| {
+        chunks.par_iter().enumerate().try_for_each(|(i, chunk)| {
+            let chunk_dir = cli.output.join(format!("chunk_{}", i + 1));
+            create_dir_all(&chunk_dir).context("Failed to create chunk directory")?;
 
-        // Copy files to chunk directory
-        copy_files_to_chunk(chunk, &chunk_dir, cli)?;
+            log_verbose(
+                cli,
+                &format!("Processing chunk {} with {} files", i + 1, chunk.len()),
+            );
 
-        // Process the chunk with magic-pdf
-        process_chunk(&chunk_dir, &cli.output, cli.verbose)?;
-    }
-    Ok(())
+            // Copy files to chunk directory
+            copy_files_to_chunk(chunk, &chunk_dir, cli)?;
+
+            // Process the chunk with magic-pdf
+            process_chunk(&chunk_dir, &cli.output, cli.verbose)?;
+
+            Ok(())
+        })
+    })
 }
 
-fn copy_files_to_chunk(
-    files: &[PathBuf],
-    chunk_dir: &Path,
-    cli: &Cli,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn copy_files_to_chunk(files: &[PathBuf], chunk_dir: &Path, cli: &Cli) -> Result<()> {
     for pdf in files {
         let filename = pdf.file_name().unwrap();
         let destination = chunk_dir.join(filename);
-        fs::copy(pdf, &destination)?;
+        fs::copy(pdf, &destination).context("Failed to copy file")?;
 
         log_verbose(cli, &format!("Copied {:?} to {:?}", pdf, destination));
     }
@@ -129,11 +141,7 @@ fn chunk_files(files: Vec<PathBuf>, chunk_size: usize) -> Vec<Vec<PathBuf>> {
         .collect()
 }
 
-fn process_chunk(
-    chunk_dir: &Path,
-    output_dir: &Path,
-    verbose: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn process_chunk(chunk_dir: &Path, output_dir: &Path, verbose: bool) -> Result<()> {
     if verbose {
         println!("Processing directory {:?} with magic-pdf", chunk_dir);
     }
