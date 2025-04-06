@@ -165,3 +165,7 @@ path = "src/bin/mpr.rs"
 [[bin]]
 name = "recmd"
 path = "src/bin/recmd.rs"
+
+[[bin]]
+name = "renm"
+path = "src/bin/renm.rs"
