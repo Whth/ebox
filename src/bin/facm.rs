@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use zip::write::{ExtendedFileOptions, FileOptions};
-use zip::ZipWriter;
+use std::process::Command;
+
 #[derive(Parser)]
 /// A command line tool to manage Factorio mods by moving old versions to an 'old_mods' directory.
 /// This tool helps in organizing your Factorio mods by archiving older versions to a separate directory.
@@ -22,6 +22,7 @@ struct Cli {
 enum Commands {
     // Existing commands...
     /// Move old mods to an 'old_mods' directory
+    #[command(alias = "m")]
     Move {
         /// The path to the mods directory
         #[arg(short, long, default_value = get_default_mods_dir())]
@@ -33,6 +34,7 @@ enum Commands {
     },
 
     /// Export enabled mods as a zip file
+    #[command(alias = "e")]
     Export {
         /// The path to the mods directory
         #[arg(short, long, default_value= get_default_mods_dir())]
@@ -48,6 +50,7 @@ enum Commands {
     },
 
     /// Import mods from a zip file to the mods directory
+    #[command(alias = "i")]
     Import {
         /// The input zip file path
         #[arg(short, long)]
@@ -59,6 +62,7 @@ enum Commands {
     },
 
     /// Install a mod from a local path or URL
+    #[command(alias = "in")]
     Install {
         /// The path or URL to the mod zip file
         source: String,
@@ -159,21 +163,27 @@ fn move_old_mods(
     let mod_entries = get_mod_entries(mods_path)?;
 
     mod_entries.into_par_iter().for_each(|(entry, base_name)| {
-        if let Some((latest_entry, _)) = latest_versions.get(&base_name) {
-            if latest_entry != &entry {
-                let mut dest_path = output_dir.clone();
-                dest_path.push(entry.file_name().unwrap());
-                if let Err(e) = fs::rename(&entry, &dest_path) {
-                    eprintln!(
-                        "Failed to move {} to {}: {}",
-                        entry.display(),
-                        dest_path.display(),
-                        e
-                    );
-                } else {
-                    println!("Moved {} to {}", entry.display(), dest_path.display());
-                }
-            }
+        // Skip if this is the latest version
+        let Some((latest_entry, _)) = latest_versions.get(&base_name) else {
+            return;
+        };
+        if latest_entry == &entry {
+            return;
+        };
+
+        // Prepare destination path
+        let mut dest_path = output_dir.clone();
+        dest_path.push(entry.file_name().unwrap());
+
+        // Move the file
+        match fs::rename(&entry, &dest_path) {
+            Ok(_) => println!("Moved {} to {}", entry.display(), dest_path.display()),
+            Err(e) => eprintln!(
+                "Failed to move {} to {}: {}",
+                entry.display(),
+                dest_path.display(),
+                e
+            ),
         }
     });
 
@@ -187,14 +197,24 @@ fn read_mod_config(
     let config: serde_json::Value = serde_json::from_str(&config_content)?;
 
     let mut mod_config = HashMap::new();
-    if let Some(mods) = config.get("mods").and_then(|v| v.as_array()) {
-        for mod_entry in mods {
-            if let Some(name) = mod_entry.get("name").and_then(|v| v.as_str()) {
-                if let Some(enabled) = mod_entry.get("enabled").and_then(|v| v.as_bool()) {
-                    mod_config.insert(name.to_string(), enabled);
-                }
-            }
-        }
+
+    let mods = match config.get("mods").and_then(|v| v.as_array()) {
+        Some(mods_array) => mods_array,
+        None => return Ok(mod_config),
+    };
+
+    for mod_entry in mods {
+        let name = match mod_entry.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let enabled = match mod_entry.get("enabled").and_then(|v| v.as_bool()) {
+            Some(e) => e,
+            None => continue,
+        };
+
+        mod_config.insert(name.to_string(), enabled);
     }
 
     Ok(mod_config)
@@ -209,73 +229,64 @@ fn zip_enabled_mods(
     let mod_config = read_mod_config(&config_file)?;
     let mod_entries = get_mod_entries(mods_path)?;
 
-    let file = fs::File::create(output_zip)?;
-    let mut zip = ZipWriter::new(file);
-    let options: FileOptions<ExtendedFileOptions> =
-        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let output_path = output_zip.to_string_lossy();
+    let mut files_to_compress = vec![];
 
-    // Add mod-list.json to the zip
     if config_file.exists() {
-        zip.start_file("mod-list.json", options.clone())?;
-        let data = fs::read(&config_file)?;
-        zip.write_all(&data)?;
-        println!("Added mod-list.json to {}", output_zip.display());
+        files_to_compress.push(config_file.to_string_lossy().to_string());
+        println!("Added mod-list.json to {}", output_path);
     } else {
         eprintln!("mod-list.json not found in the mods directory.");
     }
 
-    // Add enabled mods to the zip
     for (entry, base_name) in mod_entries {
-        if let Some(&enabled) = mod_config.get(&base_name) {
-            if enabled {
-                let file_name = entry.file_name().unwrap().to_string_lossy();
-                zip.start_file(file_name, options.clone())?;
-                let data = fs::read(&entry)?;
-                zip.write_all(&data)?;
-                println!("Added {} to {}", entry.display(), output_zip.display());
-            }
+        if mod_config.get(&base_name).copied().unwrap_or(false) {
+            files_to_compress.push(entry.to_string_lossy().to_string());
+            println!("Added {} to {}", entry.display(), output_path);
         }
     }
 
-    // Optionally add mod-settings.dat to the zip
     if include_settings {
         let settings_file = mods_path.join("mod-settings.dat");
         if settings_file.exists() {
-            zip.start_file("mod-settings.dat", options)?;
-            let data = fs::read(&settings_file)?;
-            zip.write_all(&data)?;
-            println!("Added mod-settings.dat to {}", output_zip.display());
+            files_to_compress.push(settings_file.to_string_lossy().to_string());
+            println!("Added mod-settings.dat to {}", output_path);
         } else {
             eprintln!("mod-settings.dat not found in the mods directory.");
         }
     }
 
-    zip.finish()?;
+    // 调用 7z 命令进行压缩
+    let status = Command::new("7z")
+        .arg("a")
+        .arg(output_path.to_string())
+        .args(files_to_compress)
+        .status()?;
+
+    if !status.success() {
+        return Err("Failed to compress enabled mods using 7z".into());
+    }
+
     Ok(())
 }
 
 fn import_mods(mods_path: &PathBuf, input_zip: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let file = fs::File::open(input_zip)?;
-    let mut archive = zip::ZipArchive::new(file)?;
+    let input_path = input_zip.to_string_lossy();
+    let output_path = mods_path.to_string_lossy();
 
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let outpath = mods_path.join(file.name());
+    // 调用 7z 命令进行解压
+    let status = Command::new("7z")
+        .arg("x")
+        .arg(input_path.to_string())
+        .arg("-o")
+        .arg(output_path.to_string())
+        .status()?;
 
-        if (&*file.name()).ends_with('/') {
-            fs::create_dir_all(&outpath)?;
-        } else {
-            if let Some(p) = outpath.parent() {
-                if !p.exists() {
-                    fs::create_dir_all(&p)?;
-                }
-            }
-            let mut outfile = fs::File::create(&outpath)?;
-            std::io::copy(&mut file, &mut outfile)?;
-        }
-        println!("Extracted {}", outpath.display());
+    if !status.success() {
+        return Err("Failed to extract mods using 7z".into());
     }
 
+    println!("Extracted mods from {} to {}", input_path, output_path);
     Ok(())
 }
 
@@ -283,23 +294,21 @@ fn package_folder_to_zip(
     folder_path: &PathBuf,
     output_zip: &PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let file = fs::File::create(output_zip)?;
-    let mut zip = ZipWriter::new(file);
-    let options = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let output_path = output_zip.to_string_lossy();
+    let folder_path = folder_path.to_string_lossy();
 
-    // Walk through the folder and add all files to the zip
-    for entry in walkdir::WalkDir::new(folder_path) {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            let relative_path = path.strip_prefix(folder_path)?;
-            zip.start_file(relative_path.to_string_lossy(), options.clone())?;
-            let data = fs::read(path)?;
-            zip.write_all(&data)?;
-        }
+    // 调用 7z 命令进行压缩
+    let status = Command::new("7z")
+        .arg("a")
+        .arg(output_path.to_string())
+        .arg(folder_path.to_string())
+        .status()?;
+
+    if !status.success() {
+        return Err("Failed to compress folder using 7z".into());
     }
 
-    zip.finish()?;
+    println!("Compressed folder {} into {}", folder_path, output_path);
     Ok(())
 }
 
@@ -314,12 +323,6 @@ enum ModSourceType {
     LocalFile,
     Url,
     Folder,
-}
-
-// 新增: 定义 ModInfo 结构体
-struct ModInfo {
-    name: String,
-    version: String,
 }
 
 // 新增: 验证 mod 来源的有效性
