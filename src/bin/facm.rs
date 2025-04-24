@@ -279,33 +279,150 @@ fn import_mods(mods_path: &PathBuf, input_zip: &PathBuf) -> Result<(), Box<dyn s
     Ok(())
 }
 
-fn install_mod(mods_path: &PathBuf, source: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file_path = PathBuf::new();
-    if source.starts_with("http://") || source.starts_with("https://") {
-        // Download the file from the URL
-        let response = reqwest::blocking::get(source)?;
-        if !response.status().is_success() {
-            return Err(format!("Failed to download mod from {}", source).into());
-        }
+fn package_folder_to_zip(
+    folder_path: &PathBuf,
+    output_zip: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file = fs::File::create(output_zip)?;
+    let mut zip = ZipWriter::new(file);
+    let options = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
-        let file_name = response
-            .url()
-            .path_segments()
-            .and_then(|segments| segments.last())
-            .ok_or("Invalid URL or missing file name")?;
-        file_path = mods_path.join(file_name);
-        let mut file = fs::File::create(&file_path)?;
-        let content = response.bytes()?;
-        file.write_all(&content)?;
-    } else {
-        // Use the provided local file path
-        file_path = PathBuf::from(source);
-        if !file_path.exists() {
-            return Err(format!("File not found: {}", source).into());
+    // Walk through the folder and add all files to the zip
+    for entry in walkdir::WalkDir::new(folder_path) {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            let relative_path = path.strip_prefix(folder_path)?;
+            zip.start_file(relative_path.to_string_lossy(), options.clone())?;
+            let data = fs::read(path)?;
+            zip.write_all(&data)?;
         }
     }
 
-    // Validate the file name
+    zip.finish()?;
+    Ok(())
+}
+
+// 新增: 定义 ModSource 结构体
+struct ModSource {
+    path: PathBuf,
+    source_type: ModSourceType,
+}
+
+// 新增: 定义 ModSourceType 枚举
+enum ModSourceType {
+    LocalFile,
+    Url,
+    Folder,
+}
+
+// 新增: 定义 ModInfo 结构体
+struct ModInfo {
+    name: String,
+    version: String,
+}
+
+// 新增: 验证 mod 来源的有效性
+fn validate_mod_source(source: &str) -> Result<ModSource, Box<dyn std::error::Error>> {
+    let mut file_path = PathBuf::new();
+
+    if source.starts_with("http://") || source.starts_with("https://") {
+        // URL 类型
+        file_path = PathBuf::from(source);
+        Ok(ModSource {
+            path: file_path,
+            source_type: ModSourceType::Url,
+        })
+    } else {
+        // 本地文件或文件夹
+        file_path = PathBuf::from(source);
+        if !file_path.exists() {
+            return Err(format!("File or folder not found: {}", source).into());
+        }
+
+        if file_path.is_dir() {
+            Ok(ModSource {
+                path: file_path,
+                source_type: ModSourceType::Folder,
+            })
+        } else {
+            Ok(ModSource {
+                path: file_path,
+                source_type: ModSourceType::LocalFile,
+            })
+        }
+    }
+}
+
+// 新增: 处理文件夹形式的 mod
+fn process_mod_folder(
+    folder_path: &PathBuf,
+    mods_path: &PathBuf,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // Check for info.json
+    let info_json_path = folder_path.join("info.json");
+    if !info_json_path.exists() {
+        return Err("info.json not found in the folder".into());
+    }
+
+    // Read and validate info.json
+    let info_content = fs::read_to_string(&info_json_path)?;
+    let info: serde_json::Value = serde_json::from_str(&info_content)?;
+    let name = info
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'name' field in info.json")?;
+    let version = info
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'version' field in info.json")?;
+
+    // Generate zip file name
+    let zip_file_name = format!("{}_{}.zip", name, version);
+    let zip_file_path = mods_path.join(zip_file_name);
+
+    // Package folder into zip
+    package_folder_to_zip(folder_path, &zip_file_path)?;
+
+    println!(
+        "Packaged folder {} into {}",
+        folder_path.display(),
+        zip_file_path.display()
+    );
+
+    Ok(zip_file_path)
+}
+
+// 修改: 重构 install_mod 函数
+fn install_mod(mods_path: &PathBuf, source: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // 验证 mod 来源
+    let mod_source = validate_mod_source(source)?;
+
+    // 根据来源类型处理 mod
+    let file_path = match mod_source.source_type {
+        ModSourceType::Url => {
+            // 下载文件
+            let response = reqwest::blocking::get(mod_source.path.to_string_lossy().as_ref())?;
+            if !response.status().is_success() {
+                return Err(format!("Failed to download mod from {}", source).into());
+            }
+
+            let file_name = response
+                .url()
+                .path_segments()
+                .and_then(|segments| segments.last())
+                .ok_or("Invalid URL or missing file name")?;
+            let file_path = mods_path.join(file_name);
+            let mut file = fs::File::create(&file_path)?;
+            let content = response.bytes()?;
+            file.write_all(&content)?;
+            file_path
+        }
+        ModSourceType::LocalFile => mod_source.path.clone(),
+        ModSourceType::Folder => process_mod_folder(&mod_source.path, mods_path)?,
+    };
+
+    // 验证文件名是否符合 ModEntry 正则表达式
     let file_name = file_path
         .file_name()
         .and_then(|f| f.to_str())
@@ -314,7 +431,7 @@ fn install_mod(mods_path: &PathBuf, source: &str) -> Result<(), Box<dyn std::err
         return Err(format!("Invalid mod file name: {}", file_name).into());
     }
 
-    // Move the file to the mods directory if it's not already there
+    // 移动文件到 mods 目录（如果不在 mods 目录中）
     if file_path.parent().unwrap() != mods_path {
         let dest_path = mods_path.join(file_name);
         fs::rename(&file_path, &dest_path)?;
