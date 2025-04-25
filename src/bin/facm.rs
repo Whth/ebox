@@ -71,6 +71,14 @@ enum Commands {
         #[arg(short, long, default_value = get_default_mods_dir())]
         mods_dir: PathBuf,
     },
+
+    /// List out the installed mods
+    #[command(alias = "l")]
+    List {
+        /// The path to the mods directory
+        #[arg(short, long, default_value = get_default_mods_dir())]
+        mods_dir: PathBuf,
+    },
 }
 
 fn get_default_mods_dir() -> String {
@@ -87,9 +95,11 @@ fn get_default_old_mods_dir() -> String {
 }
 
 // 新增: 提取正则表达式匹配逻辑到 ModEntry 结构体
+#[derive(Clone)] // 添加 Clone 特性
 struct ModEntry {
     base_name: String,
     version: String,
+    source_path: PathBuf, // Added field for the original zip file source path
 }
 
 impl ModEntry {
@@ -99,14 +109,40 @@ impl ModEntry {
         Some(ModEntry {
             base_name: caps.get(1)?.as_str().to_string(),
             version: caps.get(2)?.as_str().to_string(),
+            source_path: PathBuf::from(file_name), // Initialize the source_path with the file name
         })
     }
 }
 
+trait RetainLatest {
+    fn retain_latest(&self) -> Vec<ModEntry>;
+}
+
+impl RetainLatest for Vec<ModEntry> {
+    fn retain_latest(&self) -> Vec<ModEntry> {
+        // 按 base_name 分组
+        let mut grouped: HashMap<String, Vec<&ModEntry>> = HashMap::new();
+        for entry in self {
+            grouped
+                .entry(entry.base_name.clone())
+                .or_insert_with(Vec::new)
+                .push(entry);
+        }
+
+        // 在每个分组中选择版本号最高的 ModEntry
+        let mut latest_entries: Vec<ModEntry> = Vec::new();
+        for entries in grouped.values() {
+            if let Some(latest) = entries.iter().max_by(|a, b| a.version.cmp(&b.version)) {
+                latest_entries.push(latest.to_owned().clone());
+            }
+        }
+
+        latest_entries
+    }
+}
+
 // 修改: 将 get_mod_entries 函数拆分为更小的函数
-fn get_mod_entries(
-    mods_path: &PathBuf,
-) -> Result<Vec<(PathBuf, String)>, Box<dyn std::error::Error>> {
+fn get_mod_entries(mods_path: &PathBuf) -> Result<Vec<ModEntry>, Box<dyn std::error::Error>> {
     let pattern = format!("{}/*.zip", mods_path.display());
     let entries = glob(&pattern)
         .expect("Failed to read mods directory")
@@ -116,22 +152,25 @@ fn get_mod_entries(
                 .file_name()
                 .and_then(|f| f.to_str())
                 .and_then(|s| ModEntry::from_file_name(s))
-                .map(|mod_entry| (entry.clone(), mod_entry.base_name))
         })
         .collect();
 
     Ok(entries)
 }
 
-// 修改: 将 get_latest_versions 函数拆分为更小的函数
+// 修改: 更新 get_latest_versions 函数以适配新的 get_mod_entries 返回值
 fn get_latest_versions(
     mods_path: &PathBuf,
 ) -> Result<HashMap<String, (PathBuf, u64)>, Box<dyn std::error::Error>> {
     let mod_entries = get_mod_entries(mods_path)?;
 
-    let latest_versions: HashMap<String, (PathBuf, u64)> = mod_entries
+    // 使用 RetainLatest trait 的 retain_latest 方法筛选最新版本
+    let latest_entries = mod_entries.retain_latest();
+
+    let latest_versions: HashMap<String, (PathBuf, u64)> = latest_entries
         .into_iter()
-        .filter_map(|(entry, base_name)| {
+        .filter_map(|mod_entry| {
+            let entry = mod_entry.source_path.clone(); // 使用 ModEntry 中的 source_path
             let metadata = fs::metadata(&entry).ok()?;
             let modified_time = metadata
                 .modified()
@@ -139,22 +178,14 @@ fn get_latest_versions(
                 .duration_since(std::time::UNIX_EPOCH)
                 .ok()?
                 .as_secs();
-            Some((base_name, (entry, modified_time)))
+            Some((mod_entry.base_name, (entry, modified_time)))
         })
-        .fold(HashMap::new(), |mut acc, (base_name, entry_info)| {
-            if let Some((_, latest_timestamp)) = acc.get(&base_name) {
-                if entry_info.1 > *latest_timestamp {
-                    acc.insert(base_name, entry_info);
-                }
-            } else {
-                acc.insert(base_name, entry_info);
-            }
-            acc
-        });
+        .collect();
 
     Ok(latest_versions)
 }
 
+// 修改: 更新 move_old_mods 函数以适配新的 get_mod_entries 返回值
 fn move_old_mods(
     mods_path: &PathBuf,
     output_dir: &PathBuf,
@@ -162,9 +193,11 @@ fn move_old_mods(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mod_entries = get_mod_entries(mods_path)?;
 
-    mod_entries.into_par_iter().for_each(|(entry, base_name)| {
+    mod_entries.into_par_iter().for_each(|mod_entry| {
+        let entry = mod_entry.source_path.clone(); // 使用 ModEntry 中的 source_path
+
         // Skip if this is the latest version
-        let Some((latest_entry, _)) = latest_versions.get(&base_name) else {
+        let Some((latest_entry, _)) = latest_versions.get(&mod_entry.base_name) else {
             return;
         };
         if latest_entry == &entry {
@@ -239,8 +272,13 @@ fn zip_enabled_mods(
         eprintln!("mod-list.json not found in the mods directory.");
     }
 
-    for (entry, base_name) in mod_entries {
-        if mod_config.get(&base_name).copied().unwrap_or(false) {
+    for mod_entry in mod_entries {
+        let entry = mod_entry.source_path;
+        if mod_config
+            .get(&mod_entry.base_name)
+            .copied()
+            .unwrap_or(false)
+        {
             files_to_compress.push(entry.to_string_lossy().to_string());
             println!("Added {} to {}", entry.display(), output_path);
         }
@@ -327,18 +365,16 @@ enum ModSourceType {
 
 // 新增: 验证 mod 来源的有效性
 fn validate_mod_source(source: &str) -> Result<ModSource, Box<dyn std::error::Error>> {
-    let mut file_path = PathBuf::new();
-
     if source.starts_with("http://") || source.starts_with("https://") {
         // URL 类型
-        file_path = PathBuf::from(source);
+        let file_path = PathBuf::from(source);
         Ok(ModSource {
             path: file_path,
             source_type: ModSourceType::Url,
         })
     } else {
         // 本地文件或文件夹
-        file_path = PathBuf::from(source);
+        let file_path = PathBuf::from(source);
         if !file_path.exists() {
             return Err(format!("File or folder not found: {}", source).into());
         }
@@ -495,6 +531,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             install_mod(&mods_dir, &source)?;
+        }
+        Commands::List { mods_dir } => {
+            if !mods_dir.exists() || !mods_dir.is_dir() {
+                return Err("Mods directory does not exist or is not a directory".into());
+            }
+
+            let mod_entries = get_mod_entries(&mods_dir)?;
+            println!("Installed mods:");
+            for entry in mod_entries {
+                println!("{} (Version: {})", entry.base_name, entry.version);
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "ebox"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 
 [dependencies]
@@ -168,3 +168,7 @@ path = "src/bin/recmd.rs"
 [[bin]]
 name = "renm"
 path = "src/bin/renm.rs"
+
+[[bin]]
+name = "hive"
+path = "src/bin/hive.rs"
