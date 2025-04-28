@@ -1,6 +1,6 @@
 [package]
 name = "ebox"
-version = "0.1.23"
+version = "0.1.24"
 edition = "2021"
 
 [dependencies]
@@ -172,3 +172,12 @@ path = "src/bin/renm.rs"
 [[bin]]
 name = "hive"
 path = "src/bin/hive.rs"
+
+[[bin]]
+name = "corda"
+path = "src/bin/corda.rs"
+
+
+[[bin]]
+name = "ciklen"
+path = "src/bin/ciklen.rs"
