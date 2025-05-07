@@ -1,21 +1,8 @@
-use chrono::NaiveDateTime;
 use clap::Parser;
-use csv::ReaderBuilder;
-use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
+use dialoguer::Input;
 use std::error::Error;
-use std::fs::File;
 use std::path::PathBuf;
 
-/// adconv: A CLI tool to convert CSV files for anomaly detection.
-///
-/// This tool reads a CSV file, allows the user to select timestamp and target columns,
-/// and transforms the data into a format suitable for anomaly detection tasks.
-/// It supports two modes:
-/// 1. Multiple item_ids: Each selected column (excluding the timestamp) becomes a separate item.
-/// 2. Single item_id: A single selected column (excluding the timestamp) is used as the target,
-///    and all records are assigned a default item_id of "0".
-///
-/// The output CSV will have three columns: "item_id", "timestamp", and "target".
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
@@ -31,237 +18,72 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    // 读取 CSV 文件并获取表头
-    let (headers, rdr) = read_csv_and_get_headers(&args.input)?;
-
-    // 选择时间戳列
-    let timestamp_col = select_timestamp_column(&headers)?;
-
-    // 选择目标模式
-    let (selected_cols, target_col) = select_target_mode(&headers, timestamp_col)?;
-
-    // 创建输出文件
+    let mut reader = csv::Reader::from_path(&args.input)?;
     let mut wtr = csv::Writer::from_path(&args.output)?;
 
-    // 写入头
-    wtr.write_record(&["item_id", "timestamp", "target"])?;
+    println!("Processing CSV with group_size: {}", args.group_size);
 
-    // 处理每一行记录
-    let record_count = process_records(
-        rdr,
-        &headers,
-        timestamp_col,
-        &selected_cols,
-        target_col,
-        &mut wtr,
-        args.group_size, // 新增：传递 group_size 参数
-    )?;
-
-    println!(
-        "Processed {} records into {}",
-        record_count,
-        args.output.display()
-    );
-
-    Ok(())
-}
-
-/// 读取 CSV 文件并获取表头
-fn read_csv_and_get_headers(
-    input: &PathBuf,
-) -> Result<(Vec<String>, csv::Reader<File>), Box<dyn Error>> {
-    let file = File::open(input)?;
-    let mut rdr = ReaderBuilder::new().from_reader(file);
-    let headers = rdr.headers()?.clone();
-    Ok((headers.iter().map(|s| s.to_string()).collect(), rdr))
-}
-
-/// 选择时间戳列
-fn select_timestamp_column(headers: &[String]) -> Result<usize, Box<dyn Error>> {
-    let headers_str: Vec<&str> = headers.iter().map(|s| s.as_str()).collect();
-    let default_idx = headers_str
-        .iter()
-        .position(|h| h.eq_ignore_ascii_case("timestamp"));
-
-    if let Some(idx) = default_idx {
-        println!(
-            "Automatically selected '{}' as the timestamp column.",
-            headers_str[idx]
-        );
-        Ok(idx)
-    } else {
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Select the timestamp column")
-            .items(&headers_str)
-            .default(0)
-            .interact()?;
-        Ok(selection)
+    let headers = reader.headers()?.clone();
+    println!("Available columns:");
+    for (i, header) in headers.iter().enumerate() {
+        println!("{}: {}", i, header);
     }
-}
 
-/// 获取可用的列名和列索引（排除时间戳列）
-fn get_available_columns(headers: &[String], timestamp_col: usize) -> (Vec<&str>, Vec<usize>) {
-    let available_cols: Vec<&str> = headers
+    let input: String = Input::new()
+        .with_prompt("Enter the index or name of the timestamp column")
+        .interact_text()?;
+    let input = input.trim();
+
+    let ts_idx = match input.parse::<usize>() {
+        Ok(idx) if idx < headers.len() => idx,
+        _ => headers
+            .iter()
+            .position(|h| h == input)
+            .ok_or_else(|| format!("Column '{}' not found in headers.", input))?,
+    };
+
+    let mut new_headers: Vec<String> = headers
         .iter()
         .enumerate()
-        .filter_map(|(i, h)| {
-            if i != timestamp_col {
-                Some(h.as_str())
+        .map(|(i, h)| {
+            if i == ts_idx {
+                "timestamp".to_string()
             } else {
-                None
+                h.to_string()
             }
         })
         .collect();
-    let col_indices: Vec<usize> = (0..headers.len()).filter(|&i| i != timestamp_col).collect();
-    (available_cols, col_indices)
-}
 
-/// 选择目标模式
-fn select_target_mode(
-    headers: &[String],
-    timestamp_col: usize,
-) -> Result<(Option<Vec<usize>>, Option<usize>), Box<dyn Error>> {
-    let target_mode = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Select target mode")
-        .item("Multiple item_ids (each selected column becomes an item)")
-        .item("Single item_id (select one column as target)")
-        .default(0)
-        .interact()?;
+    new_headers.push("item_id".to_string());
+    wtr.write_record(&new_headers)?;
 
-    match target_mode {
-        0 => {
-            // 多列模式：选择多个列作为 item_id
-            let (available_cols, col_indices) = get_available_columns(headers, timestamp_col);
+    println!("Selected timestamp column: {}", headers[ts_idx].to_string());
+    println!("Writing output to: {}", args.output.display());
 
-            if available_cols.is_empty() {
-                return Err("No other columns available besides timestamp".into());
-            }
-
-            let selected = MultiSelect::with_theme(&ColorfulTheme::default())
-                .with_prompt("Select columns to convert into targets (each will become an item_id)")
-                .items(&available_cols)
-                .interact()?;
-
-            let selected_indices: Vec<usize> =
-                selected.into_iter().map(|i| col_indices[i]).collect();
-            Ok((Some(selected_indices), None))
-        }
-        1 => {
-            // 单列模式：选择一个目标列
-            let (available_cols, col_indices) = get_available_columns(headers, timestamp_col);
-
-            if available_cols.is_empty() {
-                return Err(
-                    "No other columns available besides timestamp to be the target column".into(),
-                );
-            }
-
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Select the target column")
-                .items(&available_cols)
-                .default(0)
-                .interact()?;
-
-            let selected_col_idx = col_indices[selection];
-            Ok((None, Some(selected_col_idx)))
-        }
-        _ => unreachable!(),
-    }
-}
-
-/// 处理每一行记录
-fn process_records(
-    mut rdr: csv::Reader<File>,
-    headers: &[String],
-    timestamp_col: usize,
-    selected_cols: &Option<Vec<usize>>,
-    target_col: Option<usize>,
-    wtr: &mut csv::Writer<File>,
-    group_size: usize,
-) -> Result<usize, Box<dyn Error>> {
     let mut record_count = 0;
-    let mut group_id = 0;
-    let mut error_count = 0;
-
-    for result in rdr.records() {
+    for (i, result) in reader.records().enumerate() {
         let record = result?;
-        let timestamp = record.get(timestamp_col).unwrap_or_default();
-
-        // 检查时间戳格式
-        if !validate_timestamp_format(timestamp) {
-            error_count += 1;
-            continue;
-        }
-
-        if let Some(cols) = selected_cols {
-            // 处理多 item_id 模式
-            process_multi_item_mode(wtr, headers, &record, timestamp, cols)?;
-        } else if let Some(target_col_idx) = target_col {
-            // 处理单 item_id 模式
-            process_single_item_mode(
-                wtr,
-                &record,
-                timestamp,
-                target_col_idx,
-                group_id,
-                group_size,
-            )?;
-            group_id += 1;
-        }
-
         record_count += 1;
+
+        let item_id = if args.group_size == 0 {
+            1
+        } else {
+            (i / args.group_size) + 1
+        };
+
+        let mut new_record: Vec<String> = record
+            .iter()
+            .enumerate()
+            .map(|(_, s)| s.to_string())
+            .collect();
+
+        new_record.push(item_id.to_string());
+        wtr.write_record(&new_record)?;
     }
 
-    // 打印格式错误的时间戳数量
-    if error_count > 0 {
-        eprintln!(
-            "Skipped {} records due to invalid timestamp format.",
-            error_count
-        );
-    }
+    wtr.flush()?;
+    println!("Total records processed: {}", record_count);
+    println!("CSV processing completed successfully.");
 
-    Ok(record_count)
-}
-
-/// 验证时间戳格式
-fn validate_timestamp_format(timestamp: &str) -> bool {
-    if timestamp.is_empty() {
-        return true;
-    }
-    NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S").is_ok()
-}
-
-/// 处理多 item_id 模式
-fn process_multi_item_mode(
-    wtr: &mut csv::Writer<File>,
-    headers: &[String],
-    record: &csv::StringRecord,
-    timestamp: &str,
-    cols: &[usize],
-) -> Result<(), Box<dyn Error>> {
-    for &col_idx in cols.iter() {
-        let item_id_name = headers.get(col_idx).expect("Invalid column index");
-        let value = record.get(col_idx).unwrap_or_default();
-        wtr.write_record(&[item_id_name.as_str(), timestamp, value])?;
-    }
-    Ok(())
-}
-
-/// 处理单 item_id 模式
-fn process_single_item_mode(
-    wtr: &mut csv::Writer<File>,
-    record: &csv::StringRecord,
-    timestamp: &str,
-    target_col_idx: usize,
-    group_id: usize,
-    group_size: usize,
-) -> Result<(), Box<dyn Error>> {
-    let value = record.get(target_col_idx).unwrap_or_default();
-    let item_id = if group_size == 0 {
-        "0".to_string() // 默认将整个文件视为同一个组
-    } else {
-        format!("{}", group_id / group_size)
-    };
-    wtr.write_record(&[&item_id, timestamp, value])?;
     Ok(())
 }
