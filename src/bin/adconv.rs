@@ -1,5 +1,5 @@
 use clap::Parser;
-use dialoguer::Input;
+use dialoguer::Select;
 use std::error::Error;
 use std::path::PathBuf;
 
@@ -13,6 +13,9 @@ struct Args {
     /// Group size for assigning item_ids. (default: 0)
     #[clap(short, long, default_value_t = 0)]
     group_size: usize,
+    /// Delete empty rows (default: true)
+    #[clap(short = 'e', long, default_value_t = false)]
+    remain_empty: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -24,23 +27,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Processing CSV with group_size: {}", args.group_size);
 
     let headers = reader.headers()?.clone();
-    println!("Available columns:");
-    for (i, header) in headers.iter().enumerate() {
-        println!("{}: {}", i, header);
-    }
-
-    let input: String = Input::new()
-        .with_prompt("Enter the index or name of the timestamp column")
-        .interact_text()?;
-    let input = input.trim();
-
-    let ts_idx = match input.parse::<usize>() {
-        Ok(idx) if idx < headers.len() => idx,
-        _ => headers
-            .iter()
-            .position(|h| h == input)
-            .ok_or_else(|| format!("Column '{}' not found in headers.", input))?,
-    };
+    // Replaced input column selection with select UI
+    let ts_idx = Select::new()
+        .with_prompt("Select the timestamp column")
+        .items(&headers.iter().map(|h| h.to_string()).collect::<Vec<_>>())
+        .default(0)
+        .interact_opt()?
+        .ok_or_else(|| "No column selected".to_string())?;
 
     let mut new_headers: Vec<String> = headers
         .iter()
@@ -63,6 +56,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut record_count = 0;
     for (i, result) in reader.records().enumerate() {
         let record = result?;
+
+        // Skip empty rows if delete_empty is true
+        if args.remain_empty && record.iter().any(|field| field.is_empty()) {
+            continue;
+        }
+
         record_count += 1;
 
         let item_id = if args.group_size == 0 {
