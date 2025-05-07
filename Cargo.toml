@@ -181,3 +181,7 @@ path = "src/bin/corda.rs"
 [[bin]]
 name = "ciklen"
 path = "src/bin/ciklen.rs"
+
+[[bin]]
+name = "adconv"
+path = "src/bin/adconv.rs"
