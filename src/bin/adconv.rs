@@ -1,10 +1,10 @@
+use chrono::NaiveDateTime;
 use clap::Parser;
 use csv::ReaderBuilder;
 use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use std::error::Error;
 use std::fs::File;
 use std::path::PathBuf;
-// Import PathBuf
 
 /// adconv: A CLI tool to convert CSV files for anomaly detection.
 ///
@@ -177,13 +177,27 @@ fn process_records(
     selected_cols: &Option<Vec<usize>>,
     target_col: Option<usize>,
     wtr: &mut csv::Writer<File>,
-    group_size: usize, // 新增：接收 group_size 参数
+    group_size: usize,
 ) -> Result<usize, Box<dyn Error>> {
     let mut record_count = 0;
-    let mut group_id = 0; // 新增：用于跟踪当前组的 ID
+    let mut group_id = 0;
+    let mut error_count = 0;
+
     for result in rdr.records() {
         let record = result?;
         let timestamp = record.get(timestamp_col).unwrap_or_default();
+
+        // 修改：使用 chrono 检查时间戳格式
+        if !timestamp.is_empty() {
+            match NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S") {
+                Ok(_) => {}
+                Err(_) => {
+                    eprintln!("Invalid timestamp format: '{}'", timestamp);
+                    error_count += 1;
+                    continue;
+                }
+            }
+        }
 
         if let Some(cols) = selected_cols {
             // 多 item_id 模式
@@ -195,13 +209,21 @@ fn process_records(
         } else if let Some(target_col_idx) = target_col {
             // 单 item_id 模式
             let value = record.get(target_col_idx).unwrap_or_default();
-            // 新增：根据 group_size 计算 item_id
             let item_id = format!("{}", group_id / group_size);
             wtr.write_record(&[&item_id, timestamp, value])?;
-            group_id += 1; // 新增：更新组 ID
+            group_id += 1;
         }
 
         record_count += 1;
     }
+
+    // 新增：打印格式错误的时间戳数量
+    if error_count > 0 {
+        eprintln!(
+            "Skipped {} records due to invalid timestamp format.",
+            error_count
+        );
+    }
+
     Ok(record_count)
 }
