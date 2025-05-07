@@ -23,8 +23,8 @@ struct Args {
     input: PathBuf,
     /// Path for the output CSV file.
     output: PathBuf,
-    /// Group size for assigning item_ids. (default: 1)
-    #[clap(short, long, default_value_t = 1)]
+    /// Group size for assigning item_ids. (default: 0)
+    #[clap(short, long, default_value_t = 0)]
     group_size: usize,
 }
 
@@ -187,37 +187,32 @@ fn process_records(
         let record = result?;
         let timestamp = record.get(timestamp_col).unwrap_or_default();
 
-        // 修改：使用 chrono 检查时间戳格式
-        if !timestamp.is_empty() {
-            match NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S") {
-                Ok(_) => {}
-                Err(_) => {
-                    eprintln!("Invalid timestamp format: '{}'", timestamp);
-                    error_count += 1;
-                    continue;
-                }
-            }
+        // 检查时间戳格式
+        if !validate_timestamp_format(timestamp) {
+            error_count += 1;
+            continue;
         }
 
         if let Some(cols) = selected_cols {
-            // 多 item_id 模式
-            for &col_idx in cols.iter() {
-                let item_id_name = headers.get(col_idx).expect("Invalid column index");
-                let value = record.get(col_idx).unwrap_or_default();
-                wtr.write_record(&[item_id_name.as_str(), timestamp, value])?;
-            }
+            // 处理多 item_id 模式
+            process_multi_item_mode(wtr, headers, &record, timestamp, cols)?;
         } else if let Some(target_col_idx) = target_col {
-            // 单 item_id 模式
-            let value = record.get(target_col_idx).unwrap_or_default();
-            let item_id = format!("{}", group_id / group_size);
-            wtr.write_record(&[&item_id, timestamp, value])?;
+            // 处理单 item_id 模式
+            process_single_item_mode(
+                wtr,
+                &record,
+                timestamp,
+                target_col_idx,
+                group_id,
+                group_size,
+            )?;
             group_id += 1;
         }
 
         record_count += 1;
     }
 
-    // 新增：打印格式错误的时间戳数量
+    // 打印格式错误的时间戳数量
     if error_count > 0 {
         eprintln!(
             "Skipped {} records due to invalid timestamp format.",
@@ -226,4 +221,47 @@ fn process_records(
     }
 
     Ok(record_count)
+}
+
+/// 验证时间戳格式
+fn validate_timestamp_format(timestamp: &str) -> bool {
+    if timestamp.is_empty() {
+        return true;
+    }
+    NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S").is_ok()
+}
+
+/// 处理多 item_id 模式
+fn process_multi_item_mode(
+    wtr: &mut csv::Writer<File>,
+    headers: &[String],
+    record: &csv::StringRecord,
+    timestamp: &str,
+    cols: &[usize],
+) -> Result<(), Box<dyn Error>> {
+    for &col_idx in cols.iter() {
+        let item_id_name = headers.get(col_idx).expect("Invalid column index");
+        let value = record.get(col_idx).unwrap_or_default();
+        wtr.write_record(&[item_id_name.as_str(), timestamp, value])?;
+    }
+    Ok(())
+}
+
+/// 处理单 item_id 模式
+fn process_single_item_mode(
+    wtr: &mut csv::Writer<File>,
+    record: &csv::StringRecord,
+    timestamp: &str,
+    target_col_idx: usize,
+    group_id: usize,
+    group_size: usize,
+) -> Result<(), Box<dyn Error>> {
+    let value = record.get(target_col_idx).unwrap_or_default();
+    let item_id = if group_size == 0 {
+        "0".to_string() // 默认将整个文件视为同一个组
+    } else {
+        format!("{}", group_id / group_size)
+    };
+    wtr.write_record(&[&item_id, timestamp, value])?;
+    Ok(())
 }
