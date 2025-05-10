@@ -1,9 +1,10 @@
 use chrono::{Duration, NaiveDate};
 use clap::{arg, Parser};
 use csv::Writer;
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 struct Point {
     lon: f32,
@@ -17,18 +18,18 @@ impl Point {
     fn get_nearest_sample(&self, lat_seq: Vec<f32>, lon_seq: Vec<f32>) -> (usize, usize) {
         // Find the index of the latitude in lat_seq closest to self.lat
         let lat_idx = lat_seq
-            .iter()
+            .par_iter() // Use par_iter for parallel processing on Vec
             .enumerate()
-            .par_bridge()
+            //.par_bridge() // Not needed if lat_seq is already a parallel iterator source
             .min_by_key(|&(_idx, &val_from_seq)| (val_from_seq - self.lat).abs().to_bits())
             .map(|(index, _)| index)
             .expect("lat_seq should not be empty and must contain valid float values.");
 
         // Find the index of the longitude in lon_seq closest to self.lon
         let lon_idx = lon_seq
-            .iter()
+            .par_iter() // Use par_iter for parallel processing on Vec
             .enumerate()
-            .par_bridge()
+            //.par_bridge()
             .min_by_key(|&(_idx, &val_from_seq)| (val_from_seq - self.lon).abs().to_bits())
             .map(|(index, _)| index)
             .expect("lon_seq should not be empty and must contain valid float values.");
@@ -40,7 +41,8 @@ impl Point {
 /// Command Line Interface (CLI) arguments for the NetCDF to CSV conversion tool.
 ///
 /// This program extracts data for a specific variable at a given latitude and longitude
-/// from a NetCDF file and outputs it to a CSV file.
+/// from NetCDF file(s) and outputs it to a CSV file. If a directory is provided as input,
+/// it processes all .nc files in that directory.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -65,105 +67,259 @@ struct Args {
     variable: String,
 }
 
-fn to_timestamp(hours_since_1900: f64) -> String {
-    // Base datetime: 1900-01-01 00:00:0.0.
-    // NaiveDate represents a date without a timezone.
+/// Converts hours since 1900-01-01 to an internal representation (seconds since 1900-01-01).
+fn hours_since_1900_to_internal_seconds(hours_since_1900: f64) -> i64 {
+    (hours_since_1900 * 3600.0).round() as i64
+}
+
+/// Formats internal seconds representation (seconds since 1900-01-01) to a timestamp string.
+fn internal_seconds_to_timestamp_string(seconds_since_1900: i64) -> String {
     let base_datetime_naive = NaiveDate::from_ymd_opt(1900, 1, 1)
         .expect("Invalid base year, month, or day for NaiveDate")
         .and_hms_opt(0, 0, 0)
         .expect("Invalid base hour, minute, or second for NaiveDate");
 
-    // Convert the input hours (since 1900-01-01) to seconds.
-    // 1 hour = 3600 seconds.
-    // Rounding handles potential floating-point inaccuracies before casting to i64.
-    let offset_seconds = (hours_since_1900 * 3600.0).round() as i64;
+    let target_datetime_naive = base_datetime_naive + Duration::seconds(seconds_since_1900);
 
-    // Calculate the target datetime by adding the offset (as a Duration) to the base NaiveDateTime.
-    // Duration::seconds assumes `use chrono::Duration;` is present or will be added.
-    let target_datetime_naive = base_datetime_naive + Duration::seconds(offset_seconds);
-
-    // Format the NaiveDateTime into a long string pattern, e.g., "YYYY-MM-DD HH:MM:SS".
     target_datetime_naive
         .format("%Y-%m-%d %H:%M:%S")
         .to_string()
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+fn process_file(
+    file_path: &Path,
+    args: &Args,
+    point: &Point,
+) -> Result<Vec<(i64, f64)>, Box<dyn std::error::Error>> {
+    let dataset = netcdf::open(file_path)?;
 
-    let dataset = netcdf::open(Path::new(&args.input))?;
+    let lat_var = dataset
+        .variable("lat")
+        .ok_or_else(|| format!("Missing 'lat' variable in {}", file_path.display()))?;
+    let lon_var = dataset
+        .variable("lon")
+        .ok_or_else(|| format!("Missing 'lon' variable in {}", file_path.display()))?;
+    let time_var = dataset
+        .variable("time")
+        .ok_or_else(|| format!("Missing 'time' variable in {}", file_path.display()))?;
 
-    let lat_var = dataset.variable("lat").expect("Missing 'lat' variable");
-    let lon_var = dataset.variable("lon").expect("Missing 'lon' variable");
-    let time_var = dataset.variable("time").expect("Missing 'time' variable");
-    let point = Point::new(args.lon, args.lat);
-    let (nearest_lat_idx, nearest_lon_idx) = point.get_nearest_sample(
-        lat_var
-            .get_values::<f32, _>(..)
-            .expect("Failed to read 'lat' variable"),
-        // Corrected order based on Point impl
-        lon_var
-            .get_values::<f32, _>(..)
-            .expect("Failed to read 'lon' variable"),
-    );
+    let lat_seq = lat_var
+        .get_values::<f32, _>(..)
+        .map_err(|e| format!("Failed to read 'lat' from {}: {}", file_path.display(), e))?;
+    let lon_seq = lon_var
+        .get_values::<f32, _>(..)
+        .map_err(|e| format!("Failed to read 'lon' from {}: {}", file_path.display(), e))?;
 
-    let data_var = dataset
-        .variable(args.variable.as_str())
-        .ok_or_else(|| format!("Missing '{}' variable", args.variable))?;
+    let (nearest_lat_idx, nearest_lon_idx) = point.get_nearest_sample(lat_seq, lon_seq);
 
-    // Ensure the indices are within bounds for the data variable dimensions
+    let data_var = dataset.variable(&args.variable).ok_or_else(|| {
+        format!(
+            "Missing '{}' variable in {}",
+            args.variable,
+            file_path.display()
+        )
+    })?;
+
     let dims = data_var.dimensions();
     if dims.len() < 3 {
-        // Assuming time, lat, lon or time, y, x
+        // Assuming dimensions are (time, lat, lon) or similar like (time, y, x)
         return Err(format!(
-            "Variable '{}' does not have enough dimensions (expected at least 3)",
-            args.variable
+            "Variable '{}' in {} does not have enough dimensions (expected at least 3, got {})",
+            args.variable,
+            file_path.display(),
+            dims.len()
         )
         .into());
     }
-    // Typically, NetCDF order is (time, lat, lon) or (time, y, x)
-    // The order from get_nearest_sample is (lat_idx, lon_idx)
-    // So we access data as (.., nearest_lat_idx, nearest_lon_idx)
-    // If the variable has other dimensions or a different order, this needs adjustment.
-    // For example, if it's (time, lon, lat), then it should be (.., nearest_lon_idx, nearest_lat_idx)
-    // The current code assumes (time, lat, lon) based on the original variable names 'lat' and 'lon' for indexing.
-    // The original code had `(.., nearest_lon_idx, nearest_lat_idx)`, which implies (time, some_dim_for_lon, some_dim_for_lat)
-    // Let's stick to what seems implied by the original indexing logic.
-    // `get_nearest_sample` returns (lat_idx, lon_idx).
-    // If the NetCDF variable is (time, lat_dim, lon_dim), then access should be (.., lat_idx, lon_idx).
-    // If the NetCDF variable is (time, lon_dim, lat_dim), then access should be (.., lon_idx, lat_idx).
-    // The original code had `wind_var.get_values::<f64, _>((.., nearest_lon_idx, nearest_lat_idx))`
-    // and `get_nearest_sample` returns `(lat_idx, lon_idx)`. This means `nearest_lon_idx` from the tuple
-    // corresponds to the *second* spatial dimension in the `get_values` call, and `nearest_lat_idx` to the *third*.
-    // This is a bit confusing. Let's assume the variable is (time, lat_dim_index, lon_dim_index)
-    // And `get_nearest_sample` returns `(lat_index_for_lat_dim, lon_index_for_lon_dim)`
-    // So access should be `(.., lat_index_for_lat_dim, lon_index_for_lon_dim)`.
 
-    let values = data_var
-        .get_values::<f64, _>((.., nearest_lat_idx, nearest_lon_idx)) // Adjusted based on tuple destructuring
-        .map_err(|e| format!("Failed to read '{}' variable: {}", args.variable, e))?;
+    // Validate indices against actual dimension lengths of the specific variable
+    // Assuming standard (time, lat, lon) order for dimensions of the variable.
+    // dim[0] is time, dim[1] is latitude-like, dim[2] is longitude-like.
+    let lat_dim_len = dims.get(1).map_or(0, |d| d.len());
+    let lon_dim_len = dims.get(2).map_or(0, |d| d.len());
 
-    let time_stamps: Vec<String> = time_var
-        .get_values::<f64, _>(..)
-        .expect("Failed to read 'time' variable")
-        .iter()
-        .par_bridge()
-        .map(|&x| to_timestamp(x))
-        .collect();
+    if nearest_lat_idx >= lat_dim_len {
+        return Err(format!(
+            "Latitude index {} out of bounds for variable '{}' in {} (lat_dim_len: {})",
+            nearest_lat_idx,
+            args.variable,
+            file_path.display(),
+            lat_dim_len
+        )
+        .into());
+    }
+    if nearest_lon_idx >= lon_dim_len {
+        return Err(format!(
+            "Longitude index {} out of bounds for variable '{}' in {} (lon_dim_len: {})",
+            nearest_lon_idx,
+            args.variable,
+            file_path.display(),
+            lon_dim_len
+        )
+        .into());
+    }
 
-    let file = File::create(&args.output)?;
+    let values_array = data_var
+        .get_values::<f64, _>((.., nearest_lat_idx, nearest_lon_idx))
+        .map_err(|e| {
+            format!(
+                "Failed to read data for '{}' from {}: {}",
+                args.variable,
+                file_path.display(),
+                e
+            )
+        })?;
+
+    let time_values_array = time_var.get_values::<f64, _>(..).map_err(|e| {
+        format!(
+            "Failed to read 'time' variable from {}: {}",
+            file_path.display(),
+            e
+        )
+    })?;
+
+    if values_array.len() != time_values_array.len() {
+        return Err(format!(
+            "Mismatch in number of data points ({}) and timestamps ({}) in {}",
+            values_array.len(),
+            time_values_array.len(),
+            file_path.display()
+        )
+        .into());
+    }
+
+    let mut file_data = Vec::with_capacity(values_array.len());
+    for (idx, &value) in values_array.iter().enumerate() {
+        let raw_time = time_values_array[idx];
+        let internal_ts = hours_since_1900_to_internal_seconds(raw_time);
+        file_data.push((internal_ts, value));
+    }
+
+    Ok(file_data)
+}
+
+fn collect_input_files(input_path_str: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let input_path = Path::new(input_path_str);
+
+    if !input_path.exists() {
+        return Err(format!("Input path does not exist: {}", input_path_str).into());
+    }
+
+    let mut input_files: Vec<PathBuf> = Vec::new();
+
+    match (input_path.is_dir(), input_path.is_file()) {
+        (true, false) => {
+            // Path is a directory
+            for entry_result in walkdir::WalkDir::new(input_path) {
+                let entry = entry_result?; // Propagate errors from WalkDir iterator
+                if entry.file_type().is_file() {
+                    if entry.path().extension().map_or(false, |ext| ext == "nc") {
+                        input_files.push(entry.path().to_path_buf());
+                    }
+                }
+            }
+            if input_files.is_empty() {
+                return Err(format!("No .nc files found in directory: {}", input_path_str).into());
+            }
+        }
+        (false, true) => {
+            // Path is a file
+            if input_path.extension().map_or(false, |ext| ext == "nc") {
+                input_files.push(input_path.to_path_buf());
+            } else {
+                return Err(format!("Input file is not a .nc file: {}", input_path_str).into());
+            }
+        }
+        _ => {
+            // Path exists but is neither a directory nor a regular file (e.g., symlink, or unexpected state)
+            return Err(format!(
+                "Input path is not a valid file or directory: {}",
+                input_path_str
+            )
+            .into());
+        }
+    }
+
+    // If we reach here, input_files must contain at least one valid path
+    // because all error conditions (no .nc files in dir, not an .nc file, invalid path type)
+    // would have caused an early return.
+    // The original code had a final check: `if input_files.is_empty()`, which is now covered
+    // by the specific error messages within the match arms.
+
+    Ok(input_files)
+}
+fn aggregate_data_from_files(
+    input_files: &[PathBuf],
+    args: &Args,
+    point: &Point,
+) -> Vec<(i64, f64)> {
+    let pb = ProgressBar::new(input_files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    input_files
+        .par_iter()
+        .progress_with(pb) // Integrate indicatif progress bar
+        .filter_map(|file_path| {
+            // println!("Processing file: {}", file_path.display()); // Replaced by progress bar
+            match process_file(file_path, args, point) {
+                Ok(data_from_file) => Some(data_from_file),
+                Err(e) => {
+                    // eprintln is still useful for errors, even with a progress bar
+                    eprintln!("Skipping file {}: {}", file_path.display(), e);
+                    None
+                }
+            }
+        })
+        .flatten() // Flattens Vec<Vec<(i64, f64)>> into an iterator of (i64, f64)
+        .collect::<Vec<(i64, f64)>>()
+}
+
+fn write_data_to_csv(
+    output_path_str: &str,
+    variable_name: &str,
+    data: &mut Vec<(i64, f64)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if data.is_empty() {
+        return Err(
+            "No data extracted. All files might have failed processing or contained no matching data."
+                .into(),
+        );
+    }
+
+    data.par_sort_unstable_by_key(|k| k.0);
+
+    let file = File::create(output_path_str)?;
     let mut wtr = Writer::from_writer(file);
 
-    // Write header
-    wtr.write_record(&["Timestamp", args.variable.as_str()])?;
+    wtr.write_record(&["timestamp", variable_name])?;
 
-    // Write data
-    for (value, timestamp) in values.iter().zip(time_stamps) {
-        wtr.write_record(&[timestamp.to_string(), value.to_string()])?;
+    for (internal_ts, value) in data {
+        let timestamp_str = internal_seconds_to_timestamp_string(*internal_ts);
+        wtr.write_record(&[timestamp_str, value.to_string()])?;
     }
 
     wtr.flush()?;
-    println!("Data successfully written to {}", args.output);
+    println!("Data successfully written to {}", output_path_str);
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
+    let input_files = collect_input_files(&args.input)?;
+
+    let point = Point::new(args.lon, args.lat);
+
+    let mut all_data = aggregate_data_from_files(&input_files, &args, &point);
+
+    write_data_to_csv(&args.output, &args.variable, &mut all_data)?;
 
     Ok(())
 }
