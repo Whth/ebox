@@ -38,8 +38,8 @@ indicatif = { version = "0.17.9", features = ["rayon"] }
 hound = "3.5.1"
 mslnk = "0.1.8"
 anyhow = "1.0.97"
-netcdf = { version = "0.11.0", features = ["ndarray", "static"] }
 rs-xfoil = "0.0.1"
+netcdf = { version = "0.11.0", features = ["static"] }
 
 [[bin]]
 name = "vmd"
@@ -192,3 +192,8 @@ path = "src/bin/adconv.rs"
 [[bin]]
 name = "nccsv"
 path = "src/bin/nccsv.rs"
+
+
+[[bin]]
+name = "ffoil"
+path = "src/bin/ffoil.rs"
