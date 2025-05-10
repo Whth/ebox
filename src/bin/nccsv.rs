@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+// No new imports seem strictly necessary, netcdf::File will be used qualified.
 
 struct Point {
     lon: f32,
@@ -17,20 +18,16 @@ impl Point {
         Point { lon, lat }
     }
     fn get_nearest_sample(&self, lat_seq: Vec<f32>, lon_seq: Vec<f32>) -> (usize, usize) {
-        // Find the index of the latitude in lat_seq closest to self.lat
         let lat_idx = lat_seq
             .par_iter()
             .enumerate()
-            //.par_bridge() // Not needed if lat_seq is already a parallel iterator source
             .min_by_key(|&(_idx, &val_from_seq)| (val_from_seq - self.lat).abs().to_bits())
             .map(|(index, _)| index)
             .expect("lat_seq should not be empty and must contain valid float values.");
 
-        // Find the index of the longitude in lon_seq closest to self.lon
         let lon_idx = lon_seq
             .par_iter()
             .enumerate()
-            //.par_bridge()
             .min_by_key(|&(_idx, &val_from_seq)| (val_from_seq - self.lon).abs().to_bits())
             .map(|(index, _)| index)
             .expect("lon_seq should not be empty and must contain valid float values.");
@@ -53,17 +50,14 @@ struct Args {
     output: String,
 
     /// Latitude for data extraction (in degrees_north).
-    /// This argument is required.
     #[arg(short, long, required = true)]
     lat: f32,
 
     /// Longitude for data extraction (in degrees_east).
-    /// This argument is required.
     #[arg(short, long, required = true)]
     lon: f32,
 
     /// Name of the variable to extract from the NetCDF file.
-    /// Defaults to "wind" if not specified.
     #[arg(short, long, default_value = "wind")]
     variable: String,
 }
@@ -89,68 +83,62 @@ fn internal_seconds_to_timestamp_string(seconds_since_1900: i64) -> String {
 
 fn process_file(
     file_path: &Path,
+    dataset_identifier: &str,
     args: &Args,
     point: &Point,
     cached_indices_arc: &Arc<Mutex<Option<(usize, usize)>>>,
 ) -> Result<Vec<(i64, f64)>, Box<dyn std::error::Error>> {
-    let dataset = netcdf::open(file_path)?;
+    let dataset = netcdf::open(file_path)
+        .map_err(|e| format!("Failed to open NetCDF file '{}': {}", dataset_identifier, e))?;
 
     let (nearest_lat_idx, nearest_lon_idx);
 
-    // Lock the cache to check or set indices
     let mut indices_opt_guard = cached_indices_arc
         .lock()
         .map_err(|e| format!("Mutex for cached_indices poisoned: {}", e))?;
 
     if let Some(cached_idxs) = *indices_opt_guard {
-        // Indices are already cached, use them
         nearest_lat_idx = cached_idxs.0;
         nearest_lon_idx = cached_idxs.1;
-        // Drop the guard early as we have the indices
         drop(indices_opt_guard);
     } else {
-        // Indices not cached, calculate them using the current file.
-        // The guard is still held exclusively by this thread.
         let lat_var = dataset
             .variable("lat")
-            .ok_or_else(|| format!("Missing 'lat' variable in {}", file_path.display()))?;
+            .ok_or_else(|| format!("Missing 'lat' variable in {}", dataset_identifier))?;
         let lon_var = dataset
             .variable("lon")
-            .ok_or_else(|| format!("Missing 'lon' variable in {}", file_path.display()))?;
+            .ok_or_else(|| format!("Missing 'lon' variable in {}", dataset_identifier))?;
 
         let lat_seq = lat_var
             .get_values::<f32, _>(..)
-            .map_err(|e| format!("Failed to read 'lat' from {}: {}", file_path.display(), e))?;
+            .map_err(|e| format!("Failed to read 'lat' from {}: {}", dataset_identifier, e))?;
         let lon_seq = lon_var
             .get_values::<f32, _>(..)
-            .map_err(|e| format!("Failed to read 'lon' from {}: {}", file_path.display(), e))?;
+            .map_err(|e| format!("Failed to read 'lon' from {}: {}", dataset_identifier, e))?;
 
         let (idx_lat, idx_lon) = point.get_nearest_sample(lat_seq, lon_seq);
 
-        // Store the newly calculated indices in the cache
         *indices_opt_guard = Some((idx_lat, idx_lon));
         nearest_lat_idx = idx_lat;
         nearest_lon_idx = idx_lon;
-        // Guard is dropped at the end of this 'else' block's scope
     }
 
     let time_var = dataset
         .variable("time")
-        .ok_or_else(|| format!("Missing 'time' variable in {}", file_path.display()))?;
+        .ok_or_else(|| format!("Missing 'time' variable in {}", dataset_identifier))?;
     let data_var = dataset.variable(&args.variable).ok_or_else(|| {
         format!(
             "Missing '{}' variable in {}",
-            args.variable,
-            file_path.display()
+            args.variable, dataset_identifier
         )
     })?;
 
     let dims = data_var.dimensions();
     if dims.len() < 3 {
         return Err(format!(
-            "Variable '{}' in {} does not have enough dimensions (expected at least 3, got {})",
+            "Variable '{}' in {} has insufficient dimensions (expected >=3, got {})",
             args.variable,
-            file_path.display(),
+            dataset_identifier,
             dims.len()
         )
         .into());
@@ -161,50 +149,33 @@ fn process_file(
 
     if nearest_lat_idx >= lat_dim_len {
         return Err(format!(
-            "Latitude index {} out of bounds for variable '{}' in {} (lat_dim_len: {}). This might happen if this file has a different grid than the one used to cache indices.",
-            nearest_lat_idx,
-            args.variable,
-            file_path.display(),
-            lat_dim_len
+            "Latitude index {} out of bounds for {} (lat_dim_len: {})",
+            nearest_lat_idx, dataset_identifier, lat_dim_len
         )
         .into());
     }
     if nearest_lon_idx >= lon_dim_len {
         return Err(format!(
-            "Longitude index {} out of bounds for variable '{}' in {} (lon_dim_len: {}). This might happen if this file has a different grid than the one used to cache indices.",
-            nearest_lon_idx,
-            args.variable,
-            file_path.display(),
-            lon_dim_len
+            "Longitude index {} out of bounds for {} (lon_dim_len: {})",
+            nearest_lon_idx, dataset_identifier, lon_dim_len
         )
         .into());
     }
 
     let values_array = data_var
         .get_values::<f64, _>((.., nearest_lat_idx, nearest_lon_idx))
-        .map_err(|e| {
-            format!(
-                "Failed to read data for '{}' from {}: {}",
-                args.variable,
-                file_path.display(),
-                e
-            )
-        })?;
+        .map_err(|e| format!("Failed to read data from {}: {}", dataset_identifier, e))?;
 
-    let time_values_array = time_var.get_values::<f64, _>(..).map_err(|e| {
-        format!(
-            "Failed to read 'time' variable from {}: {}",
-            file_path.display(),
-            e
-        )
-    })?;
+    let time_values_array = time_var
+        .get_values::<f64, _>(..)
+        .map_err(|e| format!("Failed to read 'time' from {}: {}", dataset_identifier, e))?;
 
     if values_array.len() != time_values_array.len() {
         return Err(format!(
-            "Mismatch in number of data points ({}) and timestamps ({}) in {}",
+            "Mismatch in data points/timestamps in {} ({} vs {})",
+            dataset_identifier,
             values_array.len(),
-            time_values_array.len(),
-            file_path.display()
+            time_values_array.len()
         )
         .into());
     }
@@ -230,9 +201,8 @@ fn collect_input_files(input_path_str: &str) -> Result<Vec<PathBuf>, Box<dyn std
 
     match (input_path.is_dir(), input_path.is_file()) {
         (true, false) => {
-            // Path is a directory
             for entry_result in walkdir::WalkDir::new(input_path) {
-                let entry = entry_result?; // Propagate errors from WalkDir iterator
+                let entry = entry_result?;
                 if entry.file_type().is_file() {
                     if entry.path().extension().map_or(false, |ext| ext == "nc") {
                         input_files.push(entry.path().to_path_buf());
@@ -244,7 +214,6 @@ fn collect_input_files(input_path_str: &str) -> Result<Vec<PathBuf>, Box<dyn std
             }
         }
         (false, true) => {
-            // Path is a file
             if input_path.extension().map_or(false, |ext| ext == "nc") {
                 input_files.push(input_path.to_path_buf());
             } else {
@@ -252,7 +221,6 @@ fn collect_input_files(input_path_str: &str) -> Result<Vec<PathBuf>, Box<dyn std
             }
         }
         _ => {
-            // Path exists but is neither a directory nor a regular file (e.g., symlink, or unexpected state)
             return Err(format!(
                 "Input path is not a valid file or directory: {}",
                 input_path_str
@@ -272,30 +240,29 @@ fn aggregate_data_from_files(
     pb.set_style(
         ProgressStyle::default_bar()
             .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] Processing file {pos}/{len} ({eta})",
             )
-            .unwrap()
-            .progress_chars("#>-"),
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("#>-")
     );
 
-    // Create a shared, mutable cache for the indices. Arc for shared ownership, Mutex for interior mutability.
     let cached_indices = Arc::new(Mutex::new(None::<(usize, usize)>));
 
     input_files
         .par_iter()
-        .progress_with(pb) // Integrate indicatif progress bar
+        .progress_with(pb)
         .filter_map(|file_path| {
-            // Clone the Arc for each parallel task. The Mutex remains shared.
-            let cached_indices_clone = Arc::clone(&cached_indices);
-            match process_file(file_path, args, point, &cached_indices_clone) {
+            let dataset_identifier = file_path.display().to_string();
+
+            match process_file(file_path, &dataset_identifier, args, point, &cached_indices) {
                 Ok(data_from_file) => Some(data_from_file),
                 Err(e) => {
-                    eprintln!("Skipping file {}: {}", file_path.display(), e);
+                    eprintln!("Error processing {}: {}", dataset_identifier, e);
                     None
                 }
             }
         })
-        .flatten() // Flattens Vec<Vec<(i64, f64)>> into an iterator of (i64, f64)
+        .flatten()
         .collect::<Vec<(i64, f64)>>()
 }
 
@@ -306,7 +273,7 @@ fn write_data_to_csv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if data.is_empty() {
         return Err(
-            "No data extracted. All files might have failed processing or contained no matching data."
+            "No data extracted. All files/groups might have failed processing or contained no matching data."
                 .into(),
         );
     }
@@ -332,6 +299,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let input_files = collect_input_files(&args.input)?;
+    if input_files.is_empty() {
+        // collect_input_files already returns an error if no files are found or input is invalid.
+        // So, this state should ideally not be reached if collect_input_files is robust.
+        // If it could return Ok(empty_vec), then:
+        eprintln!("No input .nc files to process.");
+        return Ok(()); // Or an error
+    }
 
     let point = Point::new(args.lon, args.lat);
 
