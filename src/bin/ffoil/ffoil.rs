@@ -1,17 +1,10 @@
 mod utils;
 
-// Still used by Sweep command
-use crate::utils::setup_progress_bar;
 use clap::{Args as ClapArgs, Parser, Subcommand};
-// Added for CSV output in GetCl command
-use foxil::Config as XfoilConfig;
-use indicatif::ParallelProgressIterator;
-use rayon::prelude::*;
-use serde_json::json;
+use foxil::result::AnalysisResult;
+use foxil::FoxConfig;
 use std::fs;
 use std::path::PathBuf;
-use utils::{AnalysisResult, XfoilResult};
-// For remove_file and potentially other file ops
 
 #[derive(Debug, Parser)]
 #[command(
@@ -105,89 +98,13 @@ struct GetClArgs {
     output_csv: String,
 }
 
-struct RangeSolver {
-    aoa_seq: Vec<f64>,
-    reynolds: usize,
-    polar_dir: PathBuf,
-    xfoil_path: String,
-    naca: String,
-}
-
-impl RangeSolver {
-    pub fn new(
-        aoa_min: f64,
-        aoa_max: f64,
-        aoa_step: f64,
-        reynolds: usize,
-        polar_dir: PathBuf,
-        xfoil_path: String,
-        naca: String,
-    ) -> Self {
-        let num_steps = ((aoa_max - aoa_min) / aoa_step).ceil() as usize;
-        Self {
-            aoa_seq: (0..=num_steps)
-                .map(|i| aoa_min + i as f64 * aoa_step)
-                .collect(),
-            reynolds,
-            polar_dir,
-            xfoil_path,
-            naca,
-        }
-    }
-    pub fn solve(&self) -> Vec<AnalysisResult> {
-        fs::create_dir_all(&self.polar_dir).expect("Failed to create polar directory");
-
-        self.aoa_seq
-            .par_iter()
-            .progress_with(setup_progress_bar(self.aoa_seq.len() as u64, "Solving"))
-            .map(|&aoa| {
-                XfoilConfig::new(&self.xfoil_path)
-                    .polar_accumulation(
-                        &self
-                            .polar_dir
-                            .join(format!("{}_{:.2}.dat", self.naca, aoa))
-                            .to_str()
-                            .unwrap(),
-                    )
-                    .naca(&self.naca)
-                    .reynolds(self.reynolds)
-                    .angle_of_attack(aoa)
-                    .get_runner()
-                    .expect("Failed to create XFoilRunner")
-                    .dispatch()
-                    .map(|xfoil_output| {
-                        serde_json::from_value::<XfoilResult>(json!(xfoil_output))
-                            .expect("Failed to parse Xfoil output")
-                    })
-                    .expect("Failed to dispatch XFoilRunner")
-                    .get_analysis_result(aoa)
-            })
-            .collect()
-    }
-}
-
 fn handle_sweep_command(
     xfoil_path: &str,
     polar_path: &PathBuf,
     args: &SweepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    match fs::remove_dir_all(polar_path) {
-        Ok(_) => {
-            // Directory and its contents removed successfully.
-        }
-        Err(e) => {
-            // If removal failed, but the error is anything other than NotFound,
-            // it's a problem we should report.
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!(
-                    "Failed to delete existing polar directory '{}': {}",
-                    polar_path.display(),
-                    e
-                )
-                .into());
-            }
-            // If the error is NotFound, the directory is already gone, which is acceptable.
-        }
+    if polar_path.exists() {
+        fs::remove_file(&polar_path).expect("Failed to delete existing polar file");
     }
 
     println!(
@@ -195,20 +112,19 @@ fn handle_sweep_command(
         args.naca, args.reynolds, args.min_aoa, args.max_aoa, args.aoa_step
     );
 
-    let analysis_result = RangeSolver::new(
-        args.min_aoa,
-        args.max_aoa,
-        args.aoa_step,
-        args.reynolds as usize,
-        polar_path.clone(),
-        xfoil_path.to_string(),
-        args.naca.clone(),
-    )
-    .solve()
-    .into_iter()
-    .filter(|r| r.is_valid())
-    .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio))
-    .expect("No valid analysis result found!");
+    let analysis_result: AnalysisResult = FoxConfig::new(xfoil_path)
+        .aoa_range(args.min_aoa, args.max_aoa, args.aoa_step)
+        .polar_accumulation(polar_path.to_str().unwrap())
+        .reynolds(args.reynolds as usize)
+        .naca(args.naca.as_str())
+        .get_runner()
+        .expect("Failed to create runner")
+        .dispatch()
+        .expect("Failed to dispatch")
+        .export()
+        .into_iter()
+        .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio))
+        .expect("No valid analysis result found!");
     utils::display_analysis_summary(args, &analysis_result);
     Ok(())
 }
@@ -224,16 +140,16 @@ fn handle_get_cl_command(
         args.naca, args.reynolds, args.min_aoa, args.max_aoa, args.aoa_step
     );
 
-    let results = RangeSolver::new(
-        args.min_aoa,
-        args.max_aoa,
-        args.aoa_step,
-        args.reynolds as usize,
-        polar_path.clone(),
-        xfoil_path.to_string(),
-        args.naca.to_string(),
-    )
-    .solve();
+    let results = FoxConfig::new(xfoil_path)
+        .aoa_range(args.min_aoa, args.max_aoa, args.aoa_step)
+        .polar_accumulation(polar_path.to_str().unwrap())
+        .reynolds(args.reynolds as usize)
+        .naca(args.naca.as_str())
+        .get_runner()
+        .expect("Failed to create runner")
+        .dispatch()
+        .expect("Failed to dispatch")
+        .export();
     results
         .iter()
         .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio));

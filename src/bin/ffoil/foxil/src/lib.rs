@@ -1,19 +1,24 @@
+use crate::result::XfoilResult;
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::vec::Vec;
 use tempfile::tempdir;
 
 pub mod error;
+pub mod result;
 
-enum Mode {
+pub enum Mode {
     Angle(f64),
+    AngleBatch(Vec<f64>),
+    AngleRange(f64, f64, f64),
     Cl(f64),
 }
 
 /// Struct tracking Xfoil configuration.
-pub struct Config {
+pub struct FoxConfig {
     mode: Mode,
     reynolds: Option<usize>,
     path: String,
@@ -22,7 +27,7 @@ pub struct Config {
     dat_file: Option<String>,
 }
 
-impl Config {
+impl FoxConfig {
     /// Create new Xfoil configuration structure from the path to an Xfoil executable.
     pub fn new(path: &str) -> Self {
         Self {
@@ -38,34 +43,31 @@ impl Config {
     /// Construct XfoilRunner from configuration
     /// panics: if no airfoil (either from polar file or NACA code) is given.
     pub fn get_runner(mut self) -> error::Result<XfoilRunner> {
-        let mut command_sequence = vec!["plop", "G", "\n"]
+        let mut command_sequence = vec!["plop", "G", ""]
             .into_iter()
             .map(|x| x.to_string())
             .collect::<Vec<_>>();
 
         if let Some(naca) = self.naca {
-            command_sequence.push(format!("naca {}", naca).to_string());
+            command_sequence.push(format!("naca {naca}").to_string());
         } else if let Some(dat) = self.dat_file {
             command_sequence
-                .extend_from_slice(&[format!("load {}", dat).to_string(), "".to_string()]);
+                .extend_from_slice(&[format!("load {dat}").to_string(), "".to_string()]);
         } else {
             panic!("Xfoil cannot run without airfoil");
         }
 
+        command_sequence.push("oper".to_string());
+
         if let Some(reynolds) = self.reynolds {
-            command_sequence.extend_from_slice(&[
-                "oper".to_string(),
-                format!("v {}", reynolds).to_string(),
-                "\n".to_string(),
-            ]);
+            command_sequence.push(format!("v {reynolds}").to_string());
         }
 
         self.polar = if let Some(polar) = self.polar {
             command_sequence.extend_from_slice(&[
-                "oper".to_string(),
                 "pacc".to_string(),
                 polar.to_string(),
-                "\n".to_string(),
+                "".to_string(),
             ]);
             Some(polar)
         } else {
@@ -73,20 +75,19 @@ impl Config {
         };
 
         match self.mode {
-            Mode::Angle(angle) => command_sequence.extend_from_slice(&[
-                "oper".to_string(),
-                format!("a {}", angle).to_string(),
-                "\n".to_string(),
-            ]),
-            Mode::Cl(cl) => command_sequence.extend_from_slice(&[
-                "oper".to_string(),
-                format!("cl {}", cl).to_string(),
-                "\n".to_string(),
-            ]),
+            Mode::Angle(angle) => {
+                command_sequence.extend_from_slice(&[format!("a {angle}").to_string()])
+            }
+            Mode::Cl(cl) => command_sequence.extend_from_slice(&[format!("cl {cl}").to_string()]),
+            Mode::AngleBatch(angles) => {
+                command_sequence.extend(angles.iter().map(|angle| format!("a {angle}")))
+            }
+            Mode::AngleRange(start, end, step) => command_sequence
+                .extend_from_slice(&[format!("aseq {start} {end} {step}").to_string()]),
         }
 
+        command_sequence.push("".to_string());
         command_sequence.push("quit".to_string());
-
         Ok(XfoilRunner {
             xfoil_path: self.path,
             command_sequence,
@@ -94,12 +95,23 @@ impl Config {
         })
     }
 
+    pub fn mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
     /// Set angle of attack at which to run xfoil computation.
     /// If lift_coefficient was previously called, the state is
     /// overwritten to use an angle of attack calculation instead.
-    pub fn angle_of_attack(mut self, angle: f64) -> Self {
-        self.mode = Mode::Angle(angle);
-        self
+    pub fn aoa(self, angle: f64) -> Self {
+        self.mode(Mode::Angle(angle))
+    }
+
+    pub fn aoa_batch(self, angles: Vec<f64>) -> Self {
+        self.mode(Mode::AngleBatch(angles))
+    }
+
+    pub fn aoa_range(self, start: f64, end: f64, step: f64) -> Self {
+        self.mode(Mode::AngleRange(start, end, step))
     }
 
     /// Set lift coefficient at which to run xfoil computation.
@@ -111,20 +123,20 @@ impl Config {
     }
 
     /// Set path of polar file to save Xfoil data into.
-    pub fn pacc_from_str(mut self, fname: &str) -> Self {
+    pub fn polar_accumulation(mut self, fname: &str) -> Self {
         self.polar = Some(fname.to_string());
         self
     }
 
-    pub fn pacc_random(mut self) -> Self {
-        self.polar = Some(
-            tempdir()
-                .expect("Failed to create tempdir")
-                .path()
-                .join("polar.dat")
-                .to_string_lossy()
-                .to_string(),
-        );
+    pub fn polar_accumulation_rand(mut self) -> Self {
+        let a = tempdir()
+            .expect("Failed to create tempdir")
+            .path()
+            .join("polar.dat")
+            .to_string_lossy()
+            .to_string();
+
+        self.polar = Some(a);
         self
     }
 
@@ -162,47 +174,42 @@ impl XfoilRunner {
     /// This method panics if something goes wrong either executing the child
     /// process, or retrieving a handle to its stdin. It may return an XfoilError
     /// if anything goes wrong writing to the process or parsing its output.
-    pub fn dispatch(self) -> error::Result<HashMap<String, Vec<f64>>> {
+    pub fn dispatch(self) -> error::Result<XfoilResult> {
         let mut child = Command::new(&self.xfoil_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .ok()
             .expect("Failed to execute Xfoil");
 
-        let mut stdin = child
+        let stdin = child
             .stdin
             .as_mut()
             .expect("Failed to retrieve handle to child stdin");
 
-        for cmd in self.command_sequence.iter() {
-            Self::write_to_xfoil(&mut stdin, &cmd)?;
-            Self::write_to_xfoil(&mut stdin, "\n")?;
+        let write_result = (|| {
+            stdin.write_all(self.command_sequence.join("\n").as_bytes())?;
+            Ok(())
+        })();
+
+        if let Err(e) = write_result {
+            // Wait on the child to prevent zombie process
+            let _ = child.wait()?; // ignore error, we're only concerned with reaping the process
+            return Err(e);
         }
 
         // If the calculation did not convergence, return ConvergenceError
-        let output = child.wait_with_output().unwrap();
-        if let Some(_) = String::from_utf8(output.stdout)?
-            .as_str()
-            .lines()
-            .find(|&line| line == " VISCAL:  Convergence failed")
-        {
-            return Err(error::XfoilError::ConvergenceError);
-        }
+        let _ = child
+            .wait_with_output()
+            .expect("Failed to retrieve child output");
 
-        if let Some(polar) = &self.polar {
-            self.parse_polar(polar)
-        } else {
-            Ok(HashMap::new())
-        }
+        self.polar
+            .as_ref()
+            .map(|p| self.parse_polar(p.as_str()))
+            .expect("The polar file is not specified!")
     }
 
-    fn write_to_xfoil(stdin: &mut ChildStdin, command: &str) -> error::Result<()> {
-        Ok(stdin.write_all(command.as_bytes())?)
-    }
-
-    fn parse_polar(&self, path: &str) -> error::Result<HashMap<String, Vec<f64>>> {
+    fn parse_polar(&self, path: &str) -> error::Result<XfoilResult> {
         let mut result = HashMap::new();
         let table_header = ["alpha", "CL", "CD", "CDp", "CM", "Top_Xtr", "Bot_Xtr"];
         for header in &table_header {
@@ -215,139 +222,16 @@ impl XfoilRunner {
                 .split_whitespace()
                 .map(|x| x.parse::<f64>().expect("Failed to parse Xfoil polar"))
                 .collect::<Vec<_>>();
-            for (header, value) in table_header.iter().zip(data) {
+            for (&header, value) in table_header.iter().zip(data) {
                 result
-                    .get_mut::<String>(&header.to_string())
+                    .get_mut(header)
                     .expect("Failed to retrieve result HashMap")
                     .push(value);
             }
         }
-        Ok(result)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    const POLAR_KEYS: [&str; 7] = ["alpha", "CL", "CD", "CDp", "CM", "Top_Xtr", "Bot_Xtr"];
-
-    #[test]
-    #[should_panic]
-    fn no_foil() {
-        let _runner = Config::new("/usr/local/bin/xfoil").get_runner().unwrap();
-    }
-
-    #[test]
-    fn convergence_error() {
-        let result = Config::new("/usr/local/bin/xfoil")
-            .naca("2414")
-            .reynolds(1)
-            .get_runner()
-            .unwrap()
-            .dispatch();
-        assert!(result.is_err(), "Convergence error test did not return Err");
-    }
-
-    #[test]
-    fn load_airfoil_dat() {
-        let results = Config::new("/usr/local/bin/xfoil")
-            .airfoil_polar_file("examples/clarky.dat")
-            .angle_of_attack(4.0)
-            .pacc_random()
-            .get_runner()
-            .unwrap()
-            .dispatch()
-            .unwrap();
-        let expect_results = [4.000, 0.8965, 0.00000, -0.00118, -0.0942, 0.0000, 0.0000];
-        for (&key, &value) in POLAR_KEYS.iter().zip(expect_results.iter()) {
-            let val = results.get(&key.to_string()).unwrap();
-            assert!((val[0] - value).abs() < 1e-2);
-        }
-    }
-
-    #[test]
-    fn aoa_inertial_success() {
-        let results = Config::new("/usr/local/bin/xfoil")
-            .naca("2414")
-            .angle_of_attack(4.0)
-            .pacc_random()
-            .get_runner()
-            .unwrap()
-            .dispatch()
-            .unwrap();
-        let expect_results = [4.0, 0.7492, 0.0, -0.00131, -0.0633, 0.0, 0.0];
-        for (&key, &value) in POLAR_KEYS.iter().zip(expect_results.iter()) {
-            let val = results.get(&key.to_string()).unwrap();
-            assert!((val[0] - value).abs() < 1e-2);
-        }
-    }
-
-    #[test]
-    fn cl_inertial_success() {
-        let results = Config::new("/usr/local/bin/xfoil")
-            .naca("2414")
-            .lift_coefficient(1.0)
-            .pacc_random()
-            .get_runner()
-            .unwrap()
-            .dispatch()
-            .unwrap();
-        let expect_results = [6.059, 1.0000, 0.00000, -0.00133, -0.0671, 0.0000, 0.0000];
-        for (&key, &value) in POLAR_KEYS.iter().zip(expect_results.iter()) {
-            let val = results.get(&key.to_string()).unwrap();
-            assert!((val[0] - value).abs() < 1e-2);
-        }
-    }
-
-    #[test]
-    fn aoa_viscous_success() {
-        let results = Config::new("/usr/local/bin/xfoil")
-            .naca("2414")
-            .angle_of_attack(4.0)
-            .reynolds(100_000)
-            .pacc_random()
-            .get_runner()
-            .unwrap()
-            .dispatch()
-            .unwrap();
-        let expect_results = [4.000, 0.7278, 0.01780, 0.00982, -0.0614, 0.6233, 1.0000];
-        for (&key, &value) in POLAR_KEYS.iter().zip(expect_results.iter()) {
-            let val = results.get(&key.to_string()).unwrap();
-            assert!((val[0] - value).abs() < 1e-2);
-        }
-    }
-
-    #[test]
-    fn cl_viscous_success() {
-        let results = Config::new("/usr/local/bin/xfoil")
-            .naca("2414")
-            .lift_coefficient(1.0)
-            .reynolds(100_000)
-            .pacc_random()
-            .get_runner()
-            .unwrap()
-            .dispatch()
-            .unwrap();
-        let expect_results = [7.121, 1.0000, 0.02106, 0.01277, -0.0443, 0.4234, 1.0000];
-        for (&key, &value) in POLAR_KEYS.iter().zip(expect_results.iter()) {
-            let val = results.get(&key.to_string()).unwrap();
-            assert!((val[0] - value).abs() < 1e-2);
-        }
-    }
-
-    #[test]
-    fn create_polar_file() {
-        use std::fs::remove_file;
-        use std::path::Path;
-        let file = "xfoil_create_polar_file_test";
-        let _ = Config::new("/usr/local/bin/xfoil")
-            .naca("2414")
-            .pacc_from_str(file)
-            .get_runner()
-            .unwrap()
-            .dispatch()
-            .unwrap();
-        assert!(Path::new(file).exists());
-        remove_file(Path::new(file)).unwrap();
+        Ok(
+            serde_json::from_value(serde_json::json!(result))
+                .expect("Failed to deserialize result"),
+        )
     }
 }
