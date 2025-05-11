@@ -102,17 +102,14 @@ fn process_file(
         nearest_lon_idx = cached_idxs.1;
         drop(indices_opt_guard);
     } else {
-        let lat_var = dataset
+        let lat_seq = dataset
             .variable("lat")
-            .ok_or_else(|| format!("Missing 'lat' variable in {}", dataset_identifier))?;
-        let lon_var = dataset
-            .variable("lon")
-            .ok_or_else(|| format!("Missing 'lon' variable in {}", dataset_identifier))?;
-
-        let lat_seq = lat_var
+            .ok_or_else(|| format!("Missing 'lat' variable in {}", dataset_identifier))?
             .get_values::<f32, _>(..)
             .map_err(|e| format!("Failed to read 'lat' from {}: {}", dataset_identifier, e))?;
-        let lon_seq = lon_var
+        let lon_seq = dataset
+            .variable("lon")
+            .ok_or_else(|| format!("Missing 'lon' variable in {}", dataset_identifier))?
             .get_values::<f32, _>(..)
             .map_err(|e| format!("Failed to read 'lon' from {}: {}", dataset_identifier, e))?;
 
