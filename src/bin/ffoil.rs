@@ -3,6 +3,7 @@ use csv::Writer;
 // Added for CSV output in GetCl command
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+// Still used by Sweep command
 use rs_xfoil::Config as XfoilConfig;
 use serde::Deserialize;
 use serde_json::json;
@@ -31,8 +32,8 @@ struct XfoilResult {
 impl XfoilResult {
     fn get_analysis_result(&self, aoa: f64) -> AnalysisResult {
         if let Some(idx) = self.alpha.iter().position(|&x| x == aoa) {
-            let cl = self.cl.get(idx).expect("cl not found!").clone();
-            let cd = self.cd.get(idx).expect("cd not found!").clone();
+            let cl = self.cl.get(idx).copied().expect("cl not found!");
+            let cd = self.cd.get(idx).copied().expect("cd not found!");
             AnalysisResult::valid_result(aoa, cl, cd)
         } else {
             AnalysisResult::default()
@@ -58,6 +59,16 @@ struct Cli {
     )]
     xfoil_path: String,
 
+    /// Path for polar data output directory (used by sweep).
+    #[arg(
+        short = 'p',
+        long,
+        global = true,
+        default_value = "polar.out",
+        env = "XFOIL_POLAR_PATH"
+    )]
+    polar_path: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -74,16 +85,7 @@ enum Commands {
 
 #[derive(Debug, ClapArgs)]
 struct SweepArgs {
-    /// Path for polar data output file (used by sweep).
-    #[arg(
-        short = 'p',
-        long,
-        default_value = "polar.out",
-        env = "XFOIL_POLAR_PATH"
-    )]
-    polar_path: String,
-
-    /// Skip deletion of existing polar file.
+    /// Skip deletion of existing polar directory.
     #[arg(short = 'd', long, default_value_t = false)]
     no_delete: bool,
 
@@ -110,15 +112,6 @@ struct SweepArgs {
 
 #[derive(Debug, ClapArgs)]
 struct GetClArgs {
-    /// Path for polar data output file (used by XFoil).
-    #[arg(
-        short = 'p',
-        long,
-        default_value = "polar.out", // Default can be the same or different
-        env = "XFOIL_POLAR_PATH"
-    )]
-    polar_path: String,
-
     /// NACA airfoil designation (e.g., "2412", "0012").
     #[arg(short, long)]
     naca: String,
@@ -155,11 +148,12 @@ struct AnalysisResult {
 
 impl AnalysisResult {
     fn valid_result(aoa: f64, cl: f64, cd: f64) -> Self {
+        let ld_ratio = if cd.abs() < 1e-9 { 0.0 } else { cl / cd }; // Avoid division by zero
         AnalysisResult {
             aoa,
             cl,
             cd,
-            ld_ratio: cl / cd,
+            ld_ratio,
             valid: true,
         }
     }
@@ -186,7 +180,6 @@ fn parse_and_validate_cli() -> Result<Cli, Box<dyn std::error::Error>> {
     match &cli.command {
         Commands::Sweep(args) => {
             if args.aoa_step <= 1e-6 {
-                // Use a small epsilon for float comparison
                 eprintln!("Error: Angle of attack step must be positive and greater than a small threshold.");
                 return Err("Invalid AoA step value.".into());
             }
@@ -197,7 +190,6 @@ fn parse_and_validate_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         }
         Commands::GetCl(args) => {
             if args.aoa_step <= 1e-6 {
-                // Use a small epsilon for float comparison
                 eprintln!("Error: Angle of attack step for GetCl must be positive and greater than a small threshold.");
                 return Err("Invalid AoA step value for GetCl.".into());
             }
@@ -229,8 +221,9 @@ fn perform_xfoil_sweep(
     args: &SweepArgs,
     pb: &ProgressBar,
 ) -> Result<AnalysisResult, Box<dyn std::error::Error>> {
-    let num_steps = ((args.max_aoa - args.min_aoa) / args.aoa_step).floor() as usize + 1;
-    (0..num_steps)
+    let num_steps = (((args.max_aoa - args.min_aoa) / args.aoa_step).floor() as usize + 1).max(1); // Ensure at least one step
+
+    let results: Vec<AnalysisResult> = (0..num_steps)
         .map(|i| args.min_aoa + i as f64 * args.aoa_step)
         .collect::<Vec<f64>>()
         .par_iter()
@@ -241,9 +234,7 @@ fn perform_xfoil_sweep(
                 .naca(&args.naca)
                 .reynolds(args.reynolds as usize)
                 .angle_of_attack(current_aoa)
-                .polar_accumulation(
-                    format!("{}/{:.2}", args.polar_path, current_aoa.clone()).as_str(),
-                );
+                .polar_accumulation(format!("{}/{:.2}", args.polar_path, current_aoa).as_str());
 
             let runner = match config.get_runner() {
                 Ok(r) => r,
@@ -256,27 +247,30 @@ fn perform_xfoil_sweep(
                 }
             };
 
-            let mut result_for_aoa: Option<AnalysisResult> = None;
-            match runner
-                .dispatch()
-                .map(|xfoil_output| serde_json::from_value::<XfoilResult>(json!(xfoil_output)))
-                .expect("Failed to parse Xfoil output")
-            {
+            match runner.dispatch().map(|xfoil_output| {
+                serde_json::from_value::<XfoilResult>(json!(xfoil_output))
+                    .expect("Failed to parse Xfoil output")
+            }) {
                 Ok(xfoil_result) => {
-                    result_for_aoa = Some(xfoil_result.get_analysis_result(current_aoa));
+                    pb.inc(1);
+                    xfoil_result.get_analysis_result(current_aoa)
                 }
                 Err(e) => {
                     pb.println(format!(
                         "Warning: XFoil execution failed for AoA = {:.2}°: {}",
                         current_aoa, e
                     ));
+                    AnalysisResult::default()
                 }
             }
-            pb.inc(1);
-            result_for_aoa.unwrap_or_default()
         })
-        .max_by(|a, b| a.aoa.total_cmp(&b.aoa))
-        .ok_or("No results found".into())
+        .collect();
+
+    results
+        .into_iter()
+        .filter(|r| r.is_valid())
+        .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio))
+        .ok_or_else(|| "No valid results found to determine optimal performance.".into())
 }
 
 fn display_analysis_summary(args: &SweepArgs, result: &AnalysisResult) {
@@ -297,38 +291,24 @@ fn display_analysis_summary(args: &SweepArgs, result: &AnalysisResult) {
     }
 }
 
-fn run_xfoil_single_aoa(
-    xfoil_path: &str,
-    naca: &str,
-    reynolds: u32,
-    aoa: f64,
-    polar_path: &str, // Added polar_path argument
-) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-    let config = XfoilConfig::new(xfoil_path)
-        .naca(naca)
-        .reynolds(reynolds as usize)
-        .angle_of_attack(aoa)
-        .polar_accumulation(polar_path); // Use polar_path for XFoil config
-
-    let runner = config.get_runner()?;
-    let xfoil_output = runner.dispatch()?;
-
-    let cl_value = xfoil_output.get("CL").and_then(|v| v.first()).copied();
-    Ok(cl_value)
-}
-
 fn write_cl_data_to_csv(
     output_path: &str,
     naca: &str,
     reynolds: u32,
-    data: &[(f64, Option<f64>)], // List of (AoA, Option<Cl>)
+    data: &[(f64, Option<f64>)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     wtr.write_record(&["NACA", "Reynolds", "AoA_deg", "Cl"])?;
+    if data.is_empty() {
+        eprintln!(
+            "Warning: No data to write to CSV for NACA {}. CSV will contain headers only.",
+            naca
+        );
+    }
     for (aoa, cl_opt) in data {
         let cl_str = match cl_opt {
             Some(cl_val) => format!("{:.4}", cl_val),
-            None => "N/A".to_string(), // Represent non-converged or error cases
+            None => "N/A".to_string(),
         };
         wtr.write_record(&[
             naca.to_string(),
@@ -346,34 +326,46 @@ fn handle_sweep_command(
     xfoil_path: &str,
     args: &SweepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse(); // 获取全局参数
+    let polar_path = &cli.polar_path; // 使用全局 polar_path
+
     if !args.no_delete {
-        if Path::new(&args.polar_path).exists() {
-            if let Err(e) = fs::remove_dir_all(&args.polar_path) {
+        if Path::new(polar_path).exists() {
+            if let Err(e) = fs::remove_dir_all(polar_path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     return Err(format!(
-                        "Failed to delete existing polar file '{}': {}",
-                        args.polar_path, e
+                        "Failed to delete existing polar directory '{}': {}",
+                        polar_path, e
                     )
                     .into());
                 }
             }
         }
     }
-    fs::create_dir_all(&args.polar_path)?;
+    fs::create_dir_all(polar_path)?;
 
     println!(
         "Analyzing NACA {} at Re = {} from AoA {:.1}° to {:.1}° (step {:.2}°)...",
         args.naca, args.reynolds, args.min_aoa, args.max_aoa, args.aoa_step
     );
 
-    let num_steps = ((args.max_aoa - args.min_aoa) / args.aoa_step).floor() as u64 + 1;
+    let num_steps = (((args.max_aoa - args.min_aoa) / args.aoa_step).floor() as u64 + 1).max(1);
     let pb = setup_progress_bar(num_steps, "Sweeping AoA");
     pb.set_length(num_steps);
 
-    let analysis_result = perform_xfoil_sweep(xfoil_path, args, &pb)?;
-
-    pb.finish_with_message("Sweep analysis complete");
-    display_analysis_summary(args, &analysis_result);
+    match perform_xfoil_sweep(xfoil_path, args, &pb) {
+        Ok(analysis_result) => {
+            pb.finish_with_message("Sweep analysis complete.");
+            display_analysis_summary(args, &analysis_result);
+        }
+        Err(e) => {
+            pb.finish_with_message(format!("Sweep analysis failed: {}", e));
+            eprintln!("\nSweep analysis concluded with an error: {}", e);
+            println!(
+                "\nNo suitable aerodynamic performance data found due to an error or lack of valid convergence points."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -381,101 +373,13 @@ fn handle_get_cl_command(
     xfoil_path: &str,
     args: &GetClArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // For GetCl, we might not want to delete the polar file by default,
-    // or perhaps make it configurable if it's used for temporary storage.
-    // If polar_path is critical for GetCl's XFoil runs, ensure it's handled.
-    // For now, assuming polar_path is primarily for output in Sweep,
-    // but for GetCl, XFoil still needs to write a temporary polar,
-    // so ensure that path is valid and doesn't conflict if used concurrently.
-    // If rs_xfoil handles temporary polar files internally when polar_accumulation is not set,
-    // then GetClArgs.polar_path might be redundant unless we *want* to save a polar for GetCl too.
-    // The prompt implies GetCl *needs* it for xfoil to work, so we will use it.
-    // We should also consider if we need a `no_delete` for GetCl's polar.
-    // For simplicity and following the prompt that "GetCl needs it", we'll assume it's needed.
-    // We won't delete it here, assuming rs_xfoil manages or overwrites it.
-    // If rs_xfoil *requires* `polar_accumulation` to be called, then we must pass it.
-
     println!(
         "Calculating Cl for NACA {} at Re = {} from AoA {:.2}° to {:.2}° (step {:.2}°)...",
         args.naca, args.reynolds, args.min_aoa, args.max_aoa, args.aoa_step
     );
 
-    let num_steps = if args.max_aoa >= args.min_aoa && args.aoa_step > 1e-9 {
-        ((args.max_aoa - args.min_aoa) / args.aoa_step).floor() as usize + 1
-    } else if (args.max_aoa - args.min_aoa).abs() < 1e-9 && args.aoa_step > 1e-9 {
-        // Single point
-        1
-    } else {
-        0 // Will be caught by validation or lead to empty aoa_list
-    };
-
-    if num_steps == 0 {
-        eprintln!("No AoA steps to process based on the provided range and step. Ensure min_aoa <= max_aoa and aoa_step is positive.");
-        return Err("No AoA steps to process.".into());
-    }
-
-    let aoa_list: Vec<f64> = (0..num_steps)
-        .map(|i| args.min_aoa + i as f64 * args.aoa_step)
-        .collect();
-
-    if aoa_list.is_empty() {
-        eprintln!("Generated AoA list is empty. Check input parameters.");
-        return Err("No AoAs to process after list generation.".into());
-    }
-
-    let pb = setup_progress_bar(aoa_list.len() as u64, "Calculating Cl");
-    pb.set_length(aoa_list.len() as u64);
-
-    let mut cl_results_with_aoa: Vec<(f64, Option<f64>)> = aoa_list
-        .par_iter()
-        .map(|&current_aoa| {
-            pb.set_message(format!("AoA: {:.2}°", current_aoa));
-            // Pass polar_path to run_xfoil_single_aoa
-            let cl_value_opt = match run_xfoil_single_aoa(xfoil_path, &args.naca, args.reynolds, current_aoa, &args.polar_path) {
-                Ok(cl_opt) => {
-                    if cl_opt.is_none() {
-                         pb.println(format!(
-                            "Warning: No Cl value obtained for AoA = {:.2}° (likely non-convergence).",
-                            current_aoa
-                        ));
-                    }
-                    cl_opt
-                }
-                Err(e) => {
-                    pb.println(format!(
-                        "Warning: XFoil execution failed for AoA = {:.2}°: {}",
-                        current_aoa, e
-                    ));
-                    None
-                }
-            };
-            pb.inc(1);
-            (current_aoa, cl_value_opt)
-        })
-        .collect();
-
-    pb.finish_with_message("Cl calculation complete.");
-
-    cl_results_with_aoa.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    let has_any_cl_value = cl_results_with_aoa
-        .iter()
-        .any(|(_, cl_opt)| cl_opt.is_some());
-    if !has_any_cl_value && !cl_results_with_aoa.is_empty() {
-        eprintln!("Warning: No Cl values were successfully calculated for any AoA in the specified range. CSV will contain N/A for Cl values.");
-    } else if cl_results_with_aoa.is_empty() {
-        eprintln!("Error: No data was generated. This indicates an issue with AoA list generation or processing logic.");
-        return Err("No Cl data generated due to empty processing list.".into());
-    }
-
-    write_cl_data_to_csv(
-        &args.output_csv,
-        &args.naca,
-        args.reynolds,
-        &cl_results_with_aoa,
-    )?;
-
-    Ok(())
+    
+    unimplemented!()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
