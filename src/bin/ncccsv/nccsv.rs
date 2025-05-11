@@ -73,7 +73,7 @@ struct ProbeArgs {
     output: PathBuf,
 
     /// Latitude for data extraction (in degrees_north).
-    #[arg(short, long, required = true)]
+    #[arg(short = 'a', long, required = true)]
     lat: f32,
 
     /// Longitude for data extraction (in degrees_east).
@@ -96,7 +96,7 @@ struct ExtractArgs {
     output: PathBuf,
 
     /// Latitude for data extraction (in degrees_north).
-    #[arg(short, long, required = true)]
+    #[arg(short = 'a', long, required = true)]
     lat: f32,
 
     /// Longitude for data extraction (in degrees_east).
