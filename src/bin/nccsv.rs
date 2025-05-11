@@ -1,5 +1,5 @@
 use chrono::{Duration, NaiveDate};
-use clap::{arg, Parser};
+use clap::{arg, Args as ClapArgs, Parser, Subcommand};
 use csv::Writer;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
@@ -36,16 +36,37 @@ impl Point {
     }
 }
 
-/// Command Line Interface (CLI) arguments for the NetCDF to CSV conversion tool.
-///
-/// This program extracts data for a specific variable at a given latitude and longitude
-/// from NetCDF file(s) and outputs it to a CSV file. If a directory is provided as input,
-/// it processes all .nc files in that directory.
+/// Command Line Interface (CLI) for NetCDF data processing.
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
+#[command(
+    author,
+    version,
+    about = "NetCDF data processing utility.",
+    long_about = "A command-line tool to perform various operations on NetCDF files, such as extracting time series data to CSV."
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Extracts time series data for a specific variable and geographic point from NetCDF files.
+    ///
+    /// This command processes one or more NetCDF files (either a single file path
+    /// or all .nc files in a directory). It extracts time series data for a
+    /// specified variable at the nearest grid point to the given latitude and
+    /// longitude. The aggregated data is then written to a CSV file.
+    Extract(ExtractArgs),
+}
+
+/// Arguments for the 'extract' subcommand.
+#[derive(ClapArgs, Debug)]
+struct ExtractArgs {
+    /// Path to the input NetCDF file or directory containing .nc files.
     input: String,
 
+    /// Path to the output CSV file.
     #[arg(default_value = "output.csv")]
     output: String,
 
@@ -84,7 +105,7 @@ fn internal_seconds_to_timestamp_string(seconds_since_1900: i64) -> String {
 fn process_file(
     file_path: &Path,
     dataset_identifier: &str,
-    args: &Args,
+    args: &ExtractArgs, // Changed from Args to ExtractArgs
     point: &Point,
     cached_indices_arc: &Arc<Mutex<Option<(usize, usize)>>>,
 ) -> Result<Vec<(i64, f64)>, Box<dyn std::error::Error>> {
@@ -100,16 +121,19 @@ fn process_file(
     if let Some(cached_idxs) = *indices_opt_guard {
         nearest_lat_idx = cached_idxs.0;
         nearest_lon_idx = cached_idxs.1;
-        drop(indices_opt_guard);
+        drop(indices_opt_guard); // Release lock early
     } else {
-        let lat_seq = dataset
+        let lat_var = dataset
             .variable("lat")
-            .ok_or_else(|| format!("Missing 'lat' variable in {}", dataset_identifier))?
+            .ok_or_else(|| format!("Missing 'lat' variable in {}", dataset_identifier))?;
+        let lat_seq = lat_var
             .get_values::<f32, _>(..)
             .map_err(|e| format!("Failed to read 'lat' from {}: {}", dataset_identifier, e))?;
-        let lon_seq = dataset
+
+        let lon_var = dataset
             .variable("lon")
-            .ok_or_else(|| format!("Missing 'lon' variable in {}", dataset_identifier))?
+            .ok_or_else(|| format!("Missing 'lon' variable in {}", dataset_identifier))?;
+        let lon_seq = lon_var
             .get_values::<f32, _>(..)
             .map_err(|e| format!("Failed to read 'lon' from {}: {}", dataset_identifier, e))?;
 
@@ -118,6 +142,7 @@ fn process_file(
         *indices_opt_guard = Some((idx_lat, idx_lon));
         nearest_lat_idx = idx_lat;
         nearest_lon_idx = idx_lon;
+        // MutexGuard is dropped automatically here when it goes out of scope
     }
 
     let time_var = dataset
@@ -141,8 +166,18 @@ fn process_file(
         .into());
     }
 
-    let lat_dim_len = dims.get(1).map_or(0, |d| d.len());
-    let lon_dim_len = dims.get(2).map_or(0, |d| d.len());
+    // Assuming dimensions are (time, lat, lon) or similar
+    let lat_dim_idx = dims
+        .iter()
+        .position(|d| d.name().to_lowercase() == "lat" || d.name().to_lowercase() == "latitude")
+        .unwrap_or(1); // Fallback to index 1 if not named 'lat'/'latitude'
+    let lon_dim_idx = dims
+        .iter()
+        .position(|d| d.name().to_lowercase() == "lon" || d.name().to_lowercase() == "longitude")
+        .unwrap_or(2); // Fallback to index 2
+
+    let lat_dim_len = dims.get(lat_dim_idx).map_or(0, |d| d.len());
+    let lon_dim_len = dims.get(lon_dim_idx).map_or(0, |d| d.len());
 
     if nearest_lat_idx >= lat_dim_len {
         return Err(format!(
@@ -160,7 +195,7 @@ fn process_file(
     }
 
     let values_array = data_var
-        .get_values::<f64, _>((.., nearest_lat_idx, nearest_lon_idx))
+        .get_values::<f64, _>((.., nearest_lat_idx, nearest_lon_idx)) // This slicing assumes (time, lat, lon) or (..., lat, lon)
         .map_err(|e| format!("Failed to read data from {}: {}", dataset_identifier, e))?;
 
     let time_values_array = time_var
@@ -230,7 +265,7 @@ fn collect_input_files(input_path_str: &str) -> Result<Vec<PathBuf>, Box<dyn std
 
 fn aggregate_data_from_files(
     input_files: &[PathBuf],
-    args: &Args,
+    args: &ExtractArgs, // Changed from Args to ExtractArgs
     point: &Point,
 ) -> Vec<(i64, f64)> {
     let pb = ProgressBar::new(input_files.len() as u64);
@@ -292,23 +327,29 @@ fn write_data_to_csv(
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-
+fn handle_extract_command(args: &ExtractArgs) -> Result<(), Box<dyn std::error::Error>> {
     let input_files = collect_input_files(&args.input)?;
-    if input_files.is_empty() {
-        // collect_input_files already returns an error if no files are found or input is invalid.
-        // So, this state should ideally not be reached if collect_input_files is robust.
-        // If it could return Ok(empty_vec), then:
-        eprintln!("No input .nc files to process.");
-        return Ok(()); // Or an error
-    }
+    // collect_input_files is expected to return an Err if no suitable files are found,
+    // so an explicit check for input_files.is_empty() is not performed here.
 
     let point = Point::new(args.lon, args.lat);
 
-    let mut all_data = aggregate_data_from_files(&input_files, &args, &point);
+    let mut all_data = aggregate_data_from_files(&input_files, args, &point);
 
     write_data_to_csv(&args.output, &args.variable, &mut all_data)?;
+
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Commands::Extract(args) => {
+            handle_extract_command(args)?;
+        } // Add other subcommands here in the future, e.g.
+          // Commands::Summarize(summary_args) => handle_summarize_command(summary_args)?,
+    }
 
     Ok(())
 }
