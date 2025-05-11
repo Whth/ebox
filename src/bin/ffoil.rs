@@ -4,10 +4,41 @@ use csv::Writer;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rs_xfoil::Config as XfoilConfig;
-use std::collections::HashMap;
+use serde::Deserialize;
+use serde_json::json;
 use std::fs;
 use std::path::Path;
 // For remove_file and potentially other file ops
+
+#[derive(Deserialize)]
+struct XfoilResult {
+    alpha: Vec<f64>,
+
+    #[serde(rename = "CL")]
+    cl: Vec<f64>,
+    #[serde(rename = "CD")]
+    cd: Vec<f64>,
+    #[serde(rename = "CDp")]
+    cd_p: Vec<f64>,
+    #[serde(rename = "CM")]
+    cm: Vec<f64>,
+    #[serde(rename = "Top_Xtr")]
+    top_xtr: Vec<f64>,
+    #[serde(rename = "Bot_Xtr")]
+    bot_xtr: Vec<f64>,
+}
+
+impl XfoilResult {
+    fn get_analysis_result(&self, aoa: f64) -> AnalysisResult {
+        if let Some(idx) = self.alpha.iter().position(|&x| x == aoa) {
+            let cl = self.cl.get(idx).expect("cl not found!").clone();
+            let cd = self.cd.get(idx).expect("cd not found!").clone();
+            AnalysisResult::valid_result(aoa, cl, cd)
+        } else {
+            AnalysisResult::default()
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -65,7 +96,7 @@ struct SweepArgs {
     reynolds: u32,
 
     /// Minimum angle of attack for sweep (degrees).
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long, default_value_t = -5.0)]
     min_aoa: f64,
 
     /// Maximum angle of attack for sweep (degrees).
@@ -97,7 +128,7 @@ struct GetClArgs {
     reynolds: u32,
 
     /// Minimum angle of attack for Cl calculation sweep (degrees).
-    #[arg(long, default_value_t = 0.0, alias = "min-alpha")]
+    #[arg(long, default_value_t = -5.0, alias = "min-alpha")]
     min_aoa: f64,
 
     /// Maximum angle of attack for Cl calculation sweep (degrees).
@@ -113,23 +144,28 @@ struct GetClArgs {
     output_csv: String,
 }
 
+#[derive(Default)]
 struct AnalysisResult {
-    best_aoa: Option<f64>,
-    best_cl: f64,
-    best_cd: f64,
-    max_cl_cd_ratio: f64,
-    found_valid_result: bool,
+    aoa: f64,
+    cl: f64,
+    cd: f64,
+    ld_ratio: f64,
+    valid: bool,
 }
 
-impl Default for AnalysisResult {
-    fn default() -> Self {
-        Self {
-            best_aoa: None,
-            best_cl: 0.0,
-            best_cd: 0.0,
-            max_cl_cd_ratio: f64::NEG_INFINITY,
-            found_valid_result: false,
+impl AnalysisResult {
+    fn valid_result(aoa: f64, cl: f64, cd: f64) -> Self {
+        AnalysisResult {
+            aoa,
+            cl,
+            cd,
+            ld_ratio: cl / cd,
+            valid: true,
         }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.valid
     }
 }
 
@@ -188,41 +224,15 @@ fn setup_progress_bar(num_steps: u64, description: &str) -> ProgressBar {
     pb
 }
 
-fn process_xfoil_output(
-    xfoil_output: &HashMap<String, Vec<f64>>,
-    current_aoa: f64,
-    analysis_stats: &mut AnalysisResult,
-) {
-    let cl_opt = xfoil_output.get("CL").and_then(|v| v.last()).copied();
-    let cd_opt = xfoil_output.get("CD").and_then(|v| v.last()).copied();
-
-    if let (Some(cl), Some(cd)) = (cl_opt, cd_opt) {
-        if cd.abs() > 1e-9 {
-            // Check cd is not effectively zero to avoid division errors
-            // More robustly, one might check `cd > 0` if negative drag is impossible/undesired.
-            let cl_cd_ratio = cl / cd;
-            if cl_cd_ratio > analysis_stats.max_cl_cd_ratio {
-                analysis_stats.max_cl_cd_ratio = cl_cd_ratio;
-                analysis_stats.best_aoa = Some(current_aoa);
-                analysis_stats.best_cl = cl;
-                analysis_stats.best_cd = cd;
-                analysis_stats.found_valid_result = true;
-            }
-        }
-    }
-}
-
 fn perform_xfoil_sweep(
     xfoil_path: &str,
     args: &SweepArgs,
     pb: &ProgressBar,
 ) -> Result<AnalysisResult, Box<dyn std::error::Error>> {
     let num_steps = ((args.max_aoa - args.min_aoa) / args.aoa_step).floor() as usize + 1;
-    let aoa_list: Vec<f64> = (0..num_steps)
+    (0..num_steps)
         .map(|i| args.min_aoa + i as f64 * args.aoa_step)
-        .collect();
-
-    let results: Vec<AnalysisResult> = aoa_list
+        .collect::<Vec<f64>>()
         .par_iter()
         .map(|&current_aoa| {
             pb.set_message(format!("{:.2}°", current_aoa));
@@ -231,7 +241,9 @@ fn perform_xfoil_sweep(
                 .naca(&args.naca)
                 .reynolds(args.reynolds as usize)
                 .angle_of_attack(current_aoa)
-                .polar_accumulation(&args.polar_path);
+                .polar_accumulation(
+                    format!("{}/{:.2}", args.polar_path, current_aoa.clone()).as_str(),
+                );
 
             let runner = match config.get_runner() {
                 Ok(r) => r,
@@ -244,10 +256,14 @@ fn perform_xfoil_sweep(
                 }
             };
 
-            let mut result_for_aoa = AnalysisResult::default();
-            match runner.dispatch() {
-                Ok(xfoil_output) => {
-                    process_xfoil_output(&xfoil_output, current_aoa, &mut result_for_aoa);
+            let mut result_for_aoa: Option<AnalysisResult> = None;
+            match runner
+                .dispatch()
+                .map(|xfoil_output| serde_json::from_value::<XfoilResult>(json!(xfoil_output)))
+                .expect("Failed to parse Xfoil output")
+            {
+                Ok(xfoil_result) => {
+                    result_for_aoa = Some(xfoil_result.get_analysis_result(current_aoa));
                 }
                 Err(e) => {
                     pb.println(format!(
@@ -257,39 +273,21 @@ fn perform_xfoil_sweep(
                 }
             }
             pb.inc(1);
-            result_for_aoa
+            result_for_aoa.unwrap_or_default()
         })
-        .collect();
-
-    let mut final_result = AnalysisResult::default();
-    for result_for_aoa in results {
-        if result_for_aoa.found_valid_result
-            && result_for_aoa.max_cl_cd_ratio > final_result.max_cl_cd_ratio
-        {
-            final_result = result_for_aoa;
-        } else if result_for_aoa.found_valid_result && !final_result.found_valid_result {
-            final_result = result_for_aoa;
-        }
-    }
-    if final_result.best_aoa.is_some() {
-        final_result.found_valid_result = true;
-    }
-
-    Ok(final_result)
+        .max_by(|a, b| a.aoa.total_cmp(&b.aoa))
+        .ok_or("No results found".into())
 }
 
 fn display_analysis_summary(args: &SweepArgs, result: &AnalysisResult) {
-    if result.found_valid_result && result.best_aoa.is_some() {
+    if result.is_valid() {
         println!("\n--- Optimal Aerodynamic Performance (Sweep) ---");
         println!("Airfoil: NACA {}", args.naca);
         println!("Reynolds Number: {}", args.reynolds);
-        println!(
-            "Best Angle of Attack (for max Cl/Cd): {:.2}°",
-            result.best_aoa.unwrap()
-        );
-        println!("Lift Coefficient (Cl) at best AoA: {:.4}", result.best_cl);
-        println!("Drag Coefficient (Cd) at best AoA: {:.4}", result.best_cd);
-        println!("Maximum Cl/Cd Ratio: {:.4}", result.max_cl_cd_ratio);
+        println!("Best Angle of Attack (for max Cl/Cd): {:.2}°", result.aoa);
+        println!("Lift Coefficient (Cl) at best AoA: {:.4}", result.cl);
+        println!("Drag Coefficient (Cd) at best AoA: {:.4}", result.cd);
+        println!("Maximum Cl/Cd Ratio: {:.4}", result.ld_ratio);
     } else {
         println!(
             "\nNo suitable aerodynamic performance data found within the specified AoA range for sweep."
@@ -350,7 +348,7 @@ fn handle_sweep_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !args.no_delete {
         if Path::new(&args.polar_path).exists() {
-            if let Err(e) = fs::remove_file(&args.polar_path) {
+            if let Err(e) = fs::remove_dir_all(&args.polar_path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     return Err(format!(
                         "Failed to delete existing polar file '{}': {}",
@@ -361,6 +359,7 @@ fn handle_sweep_command(
             }
         }
     }
+    fs::create_dir_all(&args.polar_path)?;
 
     println!(
         "Analyzing NACA {} at Re = {} from AoA {:.1}° to {:.1}° (step {:.2}°)...",
