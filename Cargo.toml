@@ -38,9 +38,10 @@ indicatif = { version = "0.17.9", features = ["rayon"] }
 hound = "3.5.1"
 mslnk = "0.1.8"
 anyhow = "1.0.97"
-rs-xfoil = "0.0.1"
 netcdf = { version = "0.11.0", features = ["static"] }
 ndarray = { version = "0.16.1", features = ["rayon"] }
+foxil = { path = "src/bin/ffoil/foxil" }
+
 
 [[bin]]
 name = "vmd"
@@ -197,4 +198,4 @@ path = "src/bin/ncccsv/nccsv.rs"
 
 [[bin]]
 name = "ffoil"
-path = "src/bin/ffoil.rs"
+path = "src/bin/ffoil/ffoil.rs"
