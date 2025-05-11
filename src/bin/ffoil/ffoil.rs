@@ -3,7 +3,6 @@ mod utils;
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use foxil::result::AnalysisResult;
 use foxil::FoxConfig;
-use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -63,11 +62,11 @@ struct SweepArgs {
     min_aoa: f64,
 
     /// Maximum angle of attack for sweep (degrees).
-    #[arg(long, default_value_t = 15.0)]
+    #[arg(long, default_value_t = 20.0)]
     max_aoa: f64,
 
     /// Angle of attack step for sweep (degrees).
-    #[arg(long, default_value_t = 0.3)]
+    #[arg(long, default_value_t = 0.1)]
     aoa_step: f64,
 }
 
@@ -86,11 +85,11 @@ struct GetClArgs {
     min_aoa: f64,
 
     /// Maximum angle of attack for Cl calculation sweep (degrees).
-    #[arg(long, default_value_t = 15.0, alias = "max-alpha")]
+    #[arg(long, default_value_t = 20.0, alias = "max-alpha")]
     max_aoa: f64,
 
     /// Angle of attack step for Cl calculation sweep (degrees).
-    #[arg(long, default_value_t = 0.3, alias = "alpha-step")]
+    #[arg(long, default_value_t = 0.1, alias = "alpha-step")]
     aoa_step: f64,
 
     /// Output CSV file path for AoA and Cl data.
@@ -103,10 +102,6 @@ fn handle_sweep_command(
     polar_path: &PathBuf,
     args: &SweepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if polar_path.exists() {
-        fs::remove_file(&polar_path).expect("Failed to delete existing polar file");
-    }
-
     println!(
         "Analyzing NACA {} at Re = {} from AoA {:.1}° to {:.1}° (step {:.2}°)...",
         args.naca, args.reynolds, args.min_aoa, args.max_aoa, args.aoa_step

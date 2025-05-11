@@ -123,20 +123,25 @@ impl FoxConfig {
     }
 
     /// Set path of polar file to save Xfoil data into.
-    pub fn polar_accumulation(mut self, fname: &str) -> Self {
-        self.polar = Some(fname.to_string());
-        self
+    pub fn polar_accumulation<T: AsRef<str>>(mut self, fname: Option<T>) -> Self {
+        match fname {
+            None => self.polar_accumulation_rand(),
+            Some(f) => {
+                self.polar = Some(f.as_ref().to_string());
+                self
+            }
+        }
     }
 
     pub fn polar_accumulation_rand(mut self) -> Self {
-        let a = tempdir()
-            .expect("Failed to create tempdir")
-            .path()
-            .join("polar.dat")
-            .to_string_lossy()
-            .to_string();
-
-        self.polar = Some(a);
+        self.polar = Some(
+            tempdir()
+                .expect("Failed to create tempdir")
+                .path()
+                .join("polar.dat")
+                .to_string_lossy()
+                .to_string(),
+        );
         self
     }
 
