@@ -4,9 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
 
+use crate::utils::setup_progress_bar;
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use foxil::result::AnalysisResult;
 use foxil::FoxConfig;
+use indicatif::ParallelProgressIterator;
+use rayon::prelude::*;
 // serde_json is used, IDE will handle import or it's part of common project dependencies.
 
 #[derive(Debug, Parser)]
@@ -106,6 +109,9 @@ struct GetClArgs {
 
 #[derive(Debug, ClapArgs)]
 struct SearchNacaArgs {
+    #[arg(default_value = "search_output")]
+    bulk_dir: PathBuf,
+
     /// Reynolds number.
     #[arg(short, long, default_value_t = 1_000_000)]
     reynolds: u32,
@@ -127,15 +133,20 @@ struct SearchNacaArgs {
     output_json: String,
 
     /// Max camber percentages (M) for NACA 4-digit series (e.g., "0,2,4").
-    #[arg(long, value_parser = clap::value_parser!(u8), num_args = 1.., value_delimiter = ',', default_value = "0,1,2,3,4,5,6,7,8,9")]
+    #[arg(long, value_parser = clap::value_parser!(u8), num_args = 1.., value_delimiter = ',', default_value = "0,1,2,3,4,5,6,7,8,9"
+    )]
     camber_percent: Vec<u8>,
 
     /// Position of max camber in tenths of chord (P) for NACA 4-digit series (e.g., "2,4").
-    #[arg(long, value_parser = clap::value_parser!(u8), num_args = 1.., value_delimiter = ',', default_value = "1,2,3,4,5,6,7,8,9")]
+    #[arg(long, value_parser = clap::value_parser!(u8), num_args = 1.., value_delimiter = ',', default_value = "1,2,3,4,5,6,7,8,9"
+    )]
     camber_pos: Vec<u8>,
 
     /// Max thickness percentages (XX) for NACA 4-digit series (e.g., "06,12,18").
-    #[arg(long, value_parser = clap::value_parser!(u8), num_args = 1.., value_delimiter = ',', default_value = "06,09,12,15,18")]
+    #[arg(long, value_parser = clap::value_parser!(u8), num_args = 1.., value_delimiter = ',', default_value = "01,02,03,04,05,06,07,08,09\
+        10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,\
+        56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99"
+    )]
     thickness_percent: Vec<u8>,
 }
 
@@ -210,11 +221,8 @@ fn handle_get_cl_command(
 
 fn handle_search_naca_command(
     xfoil_path: &PathBuf,
-    polar_path: &PathBuf,
     args: &SearchNacaArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut results_map: HashMap<String, f64> = HashMap::new();
-
     println!(
         "Starting NACA search: Re={}, AoA range [{:.1}°, {:.1}°], step {:.2}°",
         args.reynolds, args.min_aoa, args.max_aoa, args.aoa_step
@@ -251,76 +259,74 @@ fn handle_search_naca_command(
 
     let total_nacas = naca_codes_to_process.len();
     println!("Generated {} unique NACA codes to process.", total_nacas);
-    let mut count = 0;
 
-    for naca_code_str in naca_codes_to_process {
-        count += 1;
-        println!(
-            "[{}/{}] Processing NACA {}...",
-            count, total_nacas, naca_code_str
-        );
+    let results_map=naca_codes_to_process
+        .par_iter()
+        .progress_with(setup_progress_bar(total_nacas as u64, "Searching best AoA"))
+        .filter_map(|naca_code_str| {
+            let runner_result = FoxConfig::new(xfoil_path)
+                .aoa_range(args.min_aoa, args.max_aoa, args.aoa_step)
+                .polar_accumulation(args.bulk_dir.join(naca_code_str))
+                .reynolds(args.reynolds as usize)
+                .naca(naca_code_str) // naca_code_str is &String, which coerces to &str
+                .get_runner();
 
-        let runner_result = FoxConfig::new(xfoil_path)
-            .aoa_range(args.min_aoa, args.max_aoa, args.aoa_step)
-            .polar_accumulation(polar_path)
-            .reynolds(args.reynolds as usize)
-            .naca(&naca_code_str)
-            .get_runner();
+            let xfoil_runner = match runner_result {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!(
+                        "Failed to create XFoil runner for {}: {}. Skipping.",
+                        naca_code_str, e
+                    );
+                    return None;
+                }
+            };
 
-        let xfoil_runner = match runner_result {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!(
-                    "Failed to create XFoil runner for {}: {}. Skipping.",
-                    naca_code_str, e
+            let dispatch_result = xfoil_runner.dispatch();
+
+            let analysis_points = match dispatch_result {
+                Ok(res) => res.export(),
+                Err(e) => {
+                    eprintln!(
+                        "XFoil dispatch failed for {}: {}. This might be due to non-convergence or invalid airfoil geometry. Skipping.",
+                        naca_code_str, e
+                    );
+                    return None;
+                }
+            };
+
+            if analysis_points.is_empty() {
+                println!(
+                    "No valid analysis points for NACA {}. This could be due to all points failing to converge. Skipping.",
+                    naca_code_str
                 );
-                continue;
+                return None;
             }
-        };
 
-        let dispatch_result = xfoil_runner.dispatch();
+            let best_result_opt = analysis_points
+                .into_iter()
+                .filter(|ap| ap.ld_ratio.is_finite() && ap.ld_ratio > 0.0) // Consider only valid, positive L/D ratios
+                .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio));
 
-        let analysis_points = match dispatch_result {
-            Ok(res) => res.export(),
-            Err(e) => {
-                eprintln!(
-                    "XFoil dispatch failed for {}: {}. This might be due to non-convergence or invalid airfoil geometry. Skipping.",
-                    naca_code_str, e
+            if let Some(best_result) = best_result_opt {
+                println!(
+                    "NACA {}: Best L/D {:.2} at AoA {:.2}° (Cl={:.3}, Cd={:.4})",
+                    naca_code_str,
+                    best_result.ld_ratio,
+                    best_result.aoa,
+                    best_result.cl,
+                    best_result.cd
                 );
-                continue;
+                Some((naca_code_str.clone(), best_result.aoa))
+            } else {
+                println!(
+                    "Could not find a best L/D (with L/D > 0) for NACA {}. Skipping.",
+                    naca_code_str
+                );
+                None
             }
-        };
-
-        if analysis_points.is_empty() {
-            println!(
-                "No valid analysis points for NACA {}. This could be due to all points failing to converge. Skipping.",
-                naca_code_str
-            );
-            continue;
-        }
-
-        let best_result_opt = analysis_points
-            .into_iter()
-            .filter(|ap| ap.ld_ratio.is_finite() && ap.ld_ratio > 0.0) // Consider only valid, positive L/D ratios
-            .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio));
-
-        if let Some(best_result) = best_result_opt {
-            println!(
-                "NACA {}: Best L/D {:.2} at AoA {:.2}° (Cl={:.3}, Cd={:.4})",
-                naca_code_str,
-                best_result.ld_ratio,
-                best_result.aoa,
-                best_result.cl,
-                best_result.cd
-            );
-            results_map.insert(naca_code_str.clone(), best_result.aoa);
-        } else {
-            println!(
-                "Could not find a best L/D (with L/D > 0) for NACA {}. Skipping.",
-                naca_code_str
-            );
-        }
-    }
+        })
+        .collect::<HashMap<String, f64>>();
 
     println!("Writing search results to {}...", args.output_json);
     let file = File::create(&args.output_json)?;
@@ -339,9 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match &cli.command {
         Commands::Sweep(args) => handle_sweep_command(&cli.xfoil_path, &cli.polar_path, args)?,
         Commands::GetCl(args) => handle_get_cl_command(&cli.xfoil_path, &cli.polar_path, args)?,
-        Commands::SearchNaca(args) => {
-            handle_search_naca_command(&cli.xfoil_path, &cli.polar_path, args)?
-        }
+        Commands::SearchNaca(args) => handle_search_naca_command(&cli.xfoil_path, args)?,
     }
 
     Ok(())

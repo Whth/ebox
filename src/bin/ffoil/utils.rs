@@ -1,5 +1,6 @@
 use crate::SweepArgs;
 use foxil::result::AnalysisResult;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 
 fn validate_xfoil_path(xfoil_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -22,4 +23,15 @@ pub fn display_analysis_summary(args: &SweepArgs, result: &AnalysisResult) {
     println!("Lift Coefficient (Cl) at best AoA: {:.4}", result.cl);
     println!("Drag Coefficient (Cd) at best AoA: {:.4}", result.cd);
     println!("Maximum Cl/Cd Ratio: {:.4}", result.ld_ratio);
+}
+pub fn setup_progress_bar(num_steps: u64, description: &str) -> ProgressBar {
+    let pb = ProgressBar::new(num_steps);
+    let template = format!("{{spinner:.green}} [{{elapsed_precise}}] [{{bar:40.cyan/blue}}] {{pos}}/{{len}} ({{eta}}) {}: {{msg}}", description);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(&template)
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("██-"),
+    );
+    pb
 }
