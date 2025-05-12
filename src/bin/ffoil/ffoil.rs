@@ -219,6 +219,120 @@ fn handle_get_cl_command(
     Ok(())
 }
 
+fn generate_naca_codes(args: &SearchNacaArgs) -> HashSet<String> {
+    let symmetric_codes = args
+        .camber_percent
+        .iter()
+        .filter(|&&m_val| m_val == 0) // Only take m=0 for symmetric
+        .flat_map(|_m_val_is_zero| {
+            args.thickness_percent
+                .iter()
+                .filter(|&&xx_val| xx_val != 0) // Thickness must be non-zero
+                .map(|&xx_val| format!("00{:02}", xx_val))
+        });
+
+    let cambered_codes = args
+        .camber_percent
+        .iter()
+        .filter(|&&m_val| m_val != 0) // Only take m > 0 for cambered
+        .flat_map(|&m_val| {
+            args.camber_pos.iter().flat_map(move |&p_val| {
+                args.thickness_percent
+                    .iter()
+                    .filter(|&&xx_val| xx_val != 0) // Thickness must be non-zero
+                    .map(move |&xx_val| format!("{}{:01}{:02}", m_val, p_val, xx_val))
+            })
+        });
+
+    symmetric_codes.chain(cambered_codes).collect()
+}
+
+fn analyze_single_naca(
+    naca_code_str: &str,
+    xfoil_path: &PathBuf,
+    search_args: &SearchNacaArgs,
+) -> Option<(String, f64)> {
+    let runner_result = FoxConfig::new(xfoil_path)
+        .aoa_range(
+            search_args.min_aoa,
+            search_args.max_aoa,
+            search_args.aoa_step,
+        )
+        .polar_accumulation(search_args.bulk_dir.join(naca_code_str))
+        .reynolds(search_args.reynolds as usize)
+        .naca(naca_code_str)
+        .get_runner();
+
+    let xfoil_runner = match runner_result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "Failed to create XFoil runner for {}: {}. Skipping.",
+                naca_code_str, e
+            );
+            return None;
+        }
+    };
+
+    let dispatch_result = xfoil_runner.dispatch();
+
+    let analysis_points = match dispatch_result {
+        Ok(res) => res.export(),
+        Err(e) => {
+            eprintln!(
+                "XFoil dispatch failed for {}: {}. This might be due to non-convergence or invalid airfoil geometry. Skipping.",
+                naca_code_str, e
+            );
+            return None;
+        }
+    };
+
+    if analysis_points.is_empty() {
+        println!(
+            "No valid analysis points for NACA {}. This could be due to all points failing to converge. Skipping.",
+            naca_code_str
+        );
+        return None;
+    }
+
+    analysis_points
+        .into_iter()
+        .filter(|ap| ap.ld_ratio.is_finite() && ap.ld_ratio > 0.0)
+        .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio))
+        .map(|best_result| {
+            println!(
+                "NACA {}: Best L/D {:.2} at AoA {:.2}° (Cl={:.3}, Cd={:.4})",
+                naca_code_str,
+                best_result.ld_ratio,
+                best_result.aoa,
+                best_result.cl,
+                best_result.cd
+            );
+            (naca_code_str.to_string(), best_result.aoa)
+        })
+        .or_else(|| {
+            println!(
+                "Could not find a best L/D (with L/D > 0) for NACA {}. Skipping.",
+                naca_code_str
+            );
+            None
+        })
+}
+
+fn write_naca_search_results_to_json(
+    results_map: &HashMap<String, f64>,
+    output_json_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Writing search results to {}...", output_json_path);
+    let file = File::create(output_json_path)?;
+    serde_json::to_writer_pretty(file, results_map)?;
+    println!(
+        "NACA search completed. Results saved to {}.",
+        output_json_path
+    );
+    Ok(())
+}
+
 fn handle_search_naca_command(
     xfoil_path: &PathBuf,
     args: &SearchNacaArgs,
@@ -232,113 +346,25 @@ fn handle_search_naca_command(
         args.camber_percent, args.camber_pos, args.thickness_percent
     );
 
-    let mut naca_codes_to_process: HashSet<String> = HashSet::new();
-
-    for m_val in &args.camber_percent {
-        if *m_val == 0 {
-            // Symmetric airfoils: NACA 00XX
-            for xx_val in &args.thickness_percent {
-                if *xx_val == 0 {
-                    // Zero thickness airfoil is not practically useful / processable by XFoil
-                    continue;
-                }
-                naca_codes_to_process.insert(format!("00{:02}", xx_val));
-            }
-        } else {
-            // Cambered airfoils: NACA MPXX
-            for p_val in &args.camber_pos {
-                for xx_val in &args.thickness_percent {
-                    if *xx_val == 0 {
-                        continue;
-                    }
-                    naca_codes_to_process.insert(format!("{}{:01}{:02}", m_val, p_val, xx_val));
-                }
-            }
-        }
-    }
-
+    let naca_codes_to_process = generate_naca_codes(args);
     let total_nacas = naca_codes_to_process.len();
+
+    if total_nacas == 0 {
+        println!("No NACA codes generated based on the input parameters. Nothing to process.");
+        return Ok(());
+    }
     println!("Generated {} unique NACA codes to process.", total_nacas);
 
-    let results_map=naca_codes_to_process
-        .par_iter()
+    let results_map: HashMap<String, f64> = naca_codes_to_process
+        .par_iter() // HashSet's par_iter yields &String
         .progress_with(setup_progress_bar(total_nacas as u64, "Searching best AoA"))
-        .filter_map(|naca_code_str| {
-            let runner_result = FoxConfig::new(xfoil_path)
-                .aoa_range(args.min_aoa, args.max_aoa, args.aoa_step)
-                .polar_accumulation(args.bulk_dir.join(naca_code_str))
-                .reynolds(args.reynolds as usize)
-                .naca(naca_code_str) // naca_code_str is &String, which coerces to &str
-                .get_runner();
+        .filter_map(|naca_code| analyze_single_naca(naca_code, xfoil_path, args))
+        .collect();
 
-            let xfoil_runner = match runner_result {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!(
-                        "Failed to create XFoil runner for {}: {}. Skipping.",
-                        naca_code_str, e
-                    );
-                    return None;
-                }
-            };
+    write_naca_search_results_to_json(&results_map, &args.output_json)?;
 
-            let dispatch_result = xfoil_runner.dispatch();
-
-            let analysis_points = match dispatch_result {
-                Ok(res) => res.export(),
-                Err(e) => {
-                    eprintln!(
-                        "XFoil dispatch failed for {}: {}. This might be due to non-convergence or invalid airfoil geometry. Skipping.",
-                        naca_code_str, e
-                    );
-                    return None;
-                }
-            };
-
-            if analysis_points.is_empty() {
-                println!(
-                    "No valid analysis points for NACA {}. This could be due to all points failing to converge. Skipping.",
-                    naca_code_str
-                );
-                return None;
-            }
-
-            let best_result_opt = analysis_points
-                .into_iter()
-                .filter(|ap| ap.ld_ratio.is_finite() && ap.ld_ratio > 0.0) // Consider only valid, positive L/D ratios
-                .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio));
-
-            if let Some(best_result) = best_result_opt {
-                println!(
-                    "NACA {}: Best L/D {:.2} at AoA {:.2}° (Cl={:.3}, Cd={:.4})",
-                    naca_code_str,
-                    best_result.ld_ratio,
-                    best_result.aoa,
-                    best_result.cl,
-                    best_result.cd
-                );
-                Some((naca_code_str.clone(), best_result.aoa))
-            } else {
-                println!(
-                    "Could not find a best L/D (with L/D > 0) for NACA {}. Skipping.",
-                    naca_code_str
-                );
-                None
-            }
-        })
-        .collect::<HashMap<String, f64>>();
-
-    println!("Writing search results to {}...", args.output_json);
-    let file = File::create(&args.output_json)?;
-    serde_json::to_writer_pretty(file, &results_map)?;
-
-    println!(
-        "NACA search completed. Results saved to {}.",
-        args.output_json
-    );
     Ok(())
 }
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
