@@ -2,3 +2,5 @@ target
 *.out
 *.csv
 *.json
+search_output
+xplot11_logfile
