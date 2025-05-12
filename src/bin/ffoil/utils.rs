@@ -1,5 +1,4 @@
-use crate::{Cli, Commands, SweepArgs};
-use clap::Parser;
+use crate::SweepArgs;
 use foxil::result::AnalysisResult;
 use std::path::{Path, PathBuf};
 
@@ -13,38 +12,6 @@ fn validate_xfoil_path(xfoil_path: &PathBuf) -> Result<(), Box<dyn std::error::E
         return Err(format!("XFoil executable not found: {}", xfoil_path.display()).into());
     }
     Ok(())
-}
-
-pub fn parse_and_validate_cli() -> Result<Cli, Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-
-    validate_xfoil_path(&cli.xfoil_path)?;
-
-    match &cli.command {
-        Commands::Sweep(args) => {
-            if args.aoa_step <= 1e-6 {
-                eprintln!("Error: Angle of attack step must be positive and greater than a small threshold.");
-                return Err("Invalid AoA step value.".into());
-            }
-            if args.max_aoa < args.min_aoa {
-                eprintln!("Error: Maximum AoA must be greater than or equal to Minimum AoA.");
-                return Err("Maximum AoA constraint violated.".into());
-            }
-        }
-        Commands::GetCl(args) => {
-            if args.aoa_step <= 1e-6 {
-                eprintln!("Error: Angle of attack step for GetCl must be positive and greater than a small threshold.");
-                return Err("Invalid AoA step value for GetCl.".into());
-            }
-            if args.max_aoa < args.min_aoa {
-                eprintln!(
-                    "Error: Maximum AoA for GetCl must be greater than or equal to Minimum AoA."
-                );
-                return Err("Maximum AoA constraint violated for GetCl.".into());
-            }
-        }
-    }
-    Ok(cli)
 }
 
 pub fn display_analysis_summary(args: &SweepArgs, result: &AnalysisResult) {
