@@ -1,7 +1,6 @@
 use crate::result::XfoilResult;
 
 use std::collections::HashMap;
-use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -127,13 +126,7 @@ impl FoxConfig {
 
     /// Set path of polar file to save Xfoil data into.
     pub fn polar_accumulation<T: AsRef<Path>>(mut self, fname: T) -> Self {
-        let buf = fname.as_ref().to_path_buf();
-        fs::create_dir_all(buf.parent().unwrap()).expect("Failed to create parent directory");
-        if buf.exists() {
-            fs::remove_file(&buf).expect("Error deleting existing file");
-        }
-
-        self.polar = Some(buf);
+        self.polar = Some(fname.as_ref().to_path_buf());
         self
     }
 
