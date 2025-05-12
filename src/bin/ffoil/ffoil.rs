@@ -167,8 +167,9 @@ fn handle_sweep_command(
         .naca(args.naca.as_str())
         .get_runner()
         .expect("Failed to create runner")
-        .dispatch()
-        .expect("Failed to dispatch")
+        .dispatch()?
+        .get_output()
+        .expect("Failed to get output")
         .export()
         .into_iter()
         .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio))
@@ -194,8 +195,8 @@ fn handle_get_cl_command(
         .naca(args.naca.as_str())
         .get_runner()
         .expect("Failed to create runner")
-        .dispatch()
-        .expect("Failed to dispatch")
+        .dispatch()?
+        .get_output()?
         .export();
     results
         .iter()
@@ -274,7 +275,10 @@ fn analyze_single_naca(
         }
     };
 
-    let dispatch_result = xfoil_runner.dispatch();
+    let dispatch_result = xfoil_runner
+        .dispatch()
+        .expect("Failed to dispatch XFoil")
+        .get_output();
 
     let analysis_points = match dispatch_result {
         Ok(res) => res.export(),

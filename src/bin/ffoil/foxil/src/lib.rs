@@ -171,7 +171,18 @@ impl XfoilRunner {
     /// This method panics if something goes wrong either executing the child
     /// process, or retrieving a handle to its stdin. It may return an XfoilError
     /// if anything goes wrong writing to the process or parsing its output.
-    pub fn dispatch(self) -> error::Result<XfoilResult> {
+    pub fn dispatch(self) -> error::Result<Self> {
+        if let Some(polar_path) = &self.polar {
+            if polar_path.exists() {
+                // Using eprintln for warnings is a common practice.
+                eprintln!(
+                    "Warning: Polar file {} already exists. Skipping XFoil execution, assuming results are already present.",
+                    polar_path.display()
+                );
+                return Ok(self); // Skip the XFoil execution and return self to allow method chaining.
+            }
+        }
+
         let mut child = Command::new(&self.xfoil_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -200,13 +211,10 @@ impl XfoilRunner {
             .wait_with_output()
             .expect("Failed to retrieve child output");
 
-        self.polar
-            .as_ref()
-            .map(|p| self.parse_polar(p))
-            .expect("The polar file is not specified!")
+        Ok(self)
     }
 
-    fn parse_polar<T: AsRef<Path>>(&self, path: T) -> error::Result<XfoilResult> {
+    pub fn get_output(self) -> error::Result<XfoilResult> {
         let mut result = HashMap::new();
         let table_header = ["alpha", "CL", "CD", "CDp", "CM", "Top_Xtr", "Bot_Xtr"];
         for header in &table_header {
@@ -214,7 +222,10 @@ impl XfoilRunner {
         }
         // number of lines in Xfoil polar header
         const HEADER: usize = 13;
-        for line in BufReader::new(File::open(path)?).lines().skip(HEADER - 1) {
+        for line in BufReader::new(File::open(self.polar.expect("polar file not found"))?)
+            .lines()
+            .skip(HEADER - 1)
+        {
             let data = line?
                 .split_whitespace()
                 .map(|x| x.parse::<f64>().expect("Failed to parse Xfoil polar"))
