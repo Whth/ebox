@@ -21,15 +21,15 @@ struct Cli {
         default_value = "xfoil",
         env = "XFOIL_PATH"
     )]
-    xfoil_path: String,
+    xfoil_path: PathBuf,
 
-    /// Path for polar data output directory (used by sweep).
+    /// Path for polar data output directory (used by sweep). If not specified, a temporary file will be used.
     #[arg(
         short = 'p',
         long,
         global = true,
-        default_value = "polar.out",
-        env = "XFOIL_POLAR_PATH"
+        env = "XFOIL_POLAR_PATH",
+        default_value = "./polar.out"
     )]
     polar_path: PathBuf,
 
@@ -98,7 +98,7 @@ struct GetClArgs {
 }
 
 fn handle_sweep_command(
-    xfoil_path: &str,
+    xfoil_path: &PathBuf,
     polar_path: &PathBuf,
     args: &SweepArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -109,7 +109,7 @@ fn handle_sweep_command(
 
     let analysis_result: AnalysisResult = FoxConfig::new(xfoil_path)
         .aoa_range(args.min_aoa, args.max_aoa, args.aoa_step)
-        .polar_accumulation(polar_path.to_str().unwrap())
+        .polar_accumulation(polar_path)
         .reynolds(args.reynolds as usize)
         .naca(args.naca.as_str())
         .get_runner()
@@ -125,9 +125,8 @@ fn handle_sweep_command(
 }
 
 fn handle_get_cl_command(
-    xfoil_path: &str,
+    xfoil_path: &PathBuf,
     polar_path: &PathBuf,
-
     args: &GetClArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!(
@@ -137,7 +136,7 @@ fn handle_get_cl_command(
 
     let results = FoxConfig::new(xfoil_path)
         .aoa_range(args.min_aoa, args.max_aoa, args.aoa_step)
-        .polar_accumulation(polar_path.to_str().unwrap())
+        .polar_accumulation(polar_path)
         .reynolds(args.reynolds as usize)
         .naca(args.naca.as_str())
         .get_runner()
@@ -147,7 +146,7 @@ fn handle_get_cl_command(
         .export();
     results
         .iter()
-        .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio));
+        .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio)); // Note: this max_by result is not used.
     println!("Writing results to {}...", args.output_csv);
     let mut wtr = csv::WriterBuilder::new()
         .from_path(&args.output_csv)

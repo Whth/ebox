@@ -1,11 +1,12 @@
 use crate::result::XfoilResult;
 
 use std::collections::HashMap;
+use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::vec::Vec;
-use tempfile::tempdir;
 
 pub mod error;
 pub mod result;
@@ -21,19 +22,19 @@ pub enum Mode {
 pub struct FoxConfig {
     mode: Mode,
     reynolds: Option<usize>,
-    path: String,
-    polar: Option<String>,
+    path: PathBuf,
+    polar: Option<PathBuf>,
     naca: Option<String>,
-    dat_file: Option<String>,
+    dat_file: Option<PathBuf>,
 }
 
 impl FoxConfig {
     /// Create new Xfoil configuration structure from the path to an Xfoil executable.
-    pub fn new(path: &str) -> Self {
+    pub fn new<T: AsRef<Path>>(path: T) -> Self {
         Self {
             mode: Mode::Angle(0.0),
             reynolds: None,
-            path: path.to_string(),
+            path: path.as_ref().to_path_buf(),
             polar: None,
             naca: None,
             dat_file: None,
@@ -51,8 +52,10 @@ impl FoxConfig {
         if let Some(naca) = self.naca {
             command_sequence.push(format!("naca {naca}").to_string());
         } else if let Some(dat) = self.dat_file {
-            command_sequence
-                .extend_from_slice(&[format!("load {dat}").to_string(), "".to_string()]);
+            command_sequence.extend_from_slice(&[
+                format!("load {}", dat.display()).to_string(),
+                "".to_string(),
+            ]);
         } else {
             panic!("Xfoil cannot run without airfoil");
         }
@@ -66,7 +69,7 @@ impl FoxConfig {
         self.polar = if let Some(polar) = self.polar {
             command_sequence.extend_from_slice(&[
                 "pacc".to_string(),
-                polar.to_string(),
+                polar.to_string_lossy().to_string(),
                 "".to_string(),
             ]);
             Some(polar)
@@ -123,25 +126,14 @@ impl FoxConfig {
     }
 
     /// Set path of polar file to save Xfoil data into.
-    pub fn polar_accumulation<T: AsRef<str>>(mut self, fname: Option<T>) -> Self {
-        match fname {
-            None => self.polar_accumulation_rand(),
-            Some(f) => {
-                self.polar = Some(f.as_ref().to_string());
-                self
-            }
+    pub fn polar_accumulation<T: AsRef<Path>>(mut self, fname: T) -> Self {
+        let buf = fname.as_ref().to_path_buf();
+        fs::create_dir_all(buf.parent().unwrap()).expect("Failed to create parent directory");
+        if buf.exists() {
+            fs::remove_file(&buf).expect("Error deleting existing file");
         }
-    }
 
-    pub fn polar_accumulation_rand(mut self) -> Self {
-        self.polar = Some(
-            tempdir()
-                .expect("Failed to create tempdir")
-                .path()
-                .join("polar.dat")
-                .to_string_lossy()
-                .to_string(),
-        );
+        self.polar = Some(buf);
         self
     }
 
@@ -153,8 +145,8 @@ impl FoxConfig {
     }
 
     /// Specify a file containing airfoil coordinates to use in Xfoil computation.
-    pub fn airfoil_polar_file(mut self, path: &str) -> Self {
-        self.dat_file = Some(path.to_string());
+    pub fn airfoil_polar_file<T: AsRef<Path>>(mut self, path: T) -> Self {
+        self.dat_file = Some(path.as_ref().to_path_buf());
         self.naca = None;
         self
     }
@@ -167,9 +159,9 @@ impl FoxConfig {
 }
 
 pub struct XfoilRunner {
-    xfoil_path: String,
+    xfoil_path: PathBuf,
     command_sequence: Vec<String>,
-    polar: Option<String>,
+    polar: Option<PathBuf>,
 }
 
 impl XfoilRunner {
@@ -210,11 +202,11 @@ impl XfoilRunner {
 
         self.polar
             .as_ref()
-            .map(|p| self.parse_polar(p.as_str()))
+            .map(|p| self.parse_polar(p))
             .expect("The polar file is not specified!")
     }
 
-    fn parse_polar(&self, path: &str) -> error::Result<XfoilResult> {
+    fn parse_polar<T: AsRef<Path>>(&self, path: T) -> error::Result<XfoilResult> {
         let mut result = HashMap::new();
         let table_header = ["alpha", "CL", "CD", "CDp", "CM", "Top_Xtr", "Bot_Xtr"];
         for header in &table_header {
