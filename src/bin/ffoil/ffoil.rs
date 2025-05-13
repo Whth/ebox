@@ -80,6 +80,10 @@ struct SweepArgs {
     /// Angle of attack step for sweep (degrees).
     #[arg(long, default_value_t = 0.1)]
     aoa_step: f64,
+
+    /// Output CSV file path.
+    #[arg(short = "c", long, required = false)]
+    output_csv: Option<PathBuf>,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -178,7 +182,14 @@ fn handle_sweep_command(
         .expect("Failed to create runner")
         .dispatch()?
         .get_output()
-        .expect("Failed to get output")
+        .map(|out| {
+            if let Some(path) = &args.output_csv {
+                println!("Writing results to {}", path.display());
+                out.to_csv(path).expect("Failed to write CSV")
+            } else {
+                out
+            }
+        })?
         .export()
         .into_iter()
         .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio))
@@ -384,7 +395,8 @@ fn handle_load(xfoil_path: &PathBuf, args: &LoadArgs) -> Result<(), Box<dyn std:
         .polar_accumulation(&args.input)
         .get_runner()?
         .get_output()?
-        .to_csv(&args.output)
+        .to_csv(&args.output)?;
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

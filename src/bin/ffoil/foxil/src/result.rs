@@ -36,7 +36,7 @@ impl XfoilResult {
             .collect()
     }
 
-    pub fn to_csv(&self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn to_csv(self, path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let mut wtr = csv::Writer::from_path(path)?;
 
         // Write headers matching the XfoilResult fields
@@ -65,7 +65,7 @@ impl XfoilResult {
         }
 
         wtr.flush()?; // Ensure all data is written to the underlying writer.
-        Ok(())
+        Ok(self)
     }
 }
 
