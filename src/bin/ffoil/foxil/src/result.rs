@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Deserialize, Default)]
 pub struct XfoilResult {
@@ -33,6 +34,38 @@ impl XfoilResult {
             .iter()
             .map(|&aoa| self.get_analysis_result(aoa))
             .collect()
+    }
+
+    pub fn to_csv(&self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        let mut wtr = csv::Writer::from_path(path)?;
+
+        // Write headers matching the XfoilResult fields
+        wtr.write_record(["alpha", "CL", "CD", "CDp", "CM", "Top_Xtr", "Bot_Xtr"])?;
+
+        // Iterate over the data points.
+        // Assumes all Vec<f64> fields in XfoilResult have the same length,
+        // corresponding to the number of alpha values.
+        // This should be guaranteed by the parsing logic that creates XfoilResult.
+        if !self.alpha.is_empty() {
+            for i in 0..self.alpha.len() {
+                // It's generally safe to use direct indexing if the invariant holds.
+                // Otherwise, .get(i).copied().unwrap_or_default() could be used for robustness,
+                // but that would mask data integrity issues.
+                let record = [
+                    self.alpha[i].to_string(),
+                    self.cl[i].to_string(),
+                    self.cd[i].to_string(),
+                    self.cd_p[i].to_string(),
+                    self.cm[i].to_string(),
+                    self.top_xtr[i].to_string(),
+                    self.bot_xtr[i].to_string(),
+                ];
+                wtr.write_record(&record)?;
+            }
+        }
+
+        wtr.flush()?; // Ensure all data is written to the underlying writer.
+        Ok(())
     }
 }
 

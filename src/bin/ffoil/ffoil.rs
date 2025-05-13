@@ -55,6 +55,8 @@ enum Commands {
     /// Searches a range of NACA 4-digit airfoils to find the best angle of attack for each,
     /// outputting results to a JSON file.
     SearchNaca(SearchNacaArgs),
+
+    Load(LoadArgs),
 }
 
 #[derive(Debug, ClapArgs)]
@@ -148,6 +150,13 @@ struct SearchNacaArgs {
         56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99"
     )]
     thickness_percent: Vec<u8>,
+}
+
+#[derive(Debug, ClapArgs)]
+struct LoadArgs {
+    input: PathBuf,
+    #[arg(short = 'o', long, default_value = "foil_data.csv")]
+    output: PathBuf,
 }
 
 fn handle_sweep_command(
@@ -369,6 +378,15 @@ fn handle_search_naca_command(
 
     Ok(())
 }
+
+fn handle_load(xfoil_path: &PathBuf, args: &LoadArgs) -> Result<(), Box<dyn std::error::Error>> {
+    FoxConfig::new(xfoil_path)
+        .polar_accumulation(&args.input)
+        .get_runner()?
+        .get_output()?
+        .to_csv(&args.output)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -376,6 +394,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Sweep(args) => handle_sweep_command(&cli.xfoil_path, &cli.polar_path, args)?,
         Commands::GetCl(args) => handle_get_cl_command(&cli.xfoil_path, &cli.polar_path, args)?,
         Commands::SearchNaca(args) => handle_search_naca_command(&cli.xfoil_path, args)?,
+        Commands::Load(args) => handle_load(&cli.xfoil_path, args)?,
     }
 
     Ok(())

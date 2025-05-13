@@ -1,19 +1,6 @@
 use crate::SweepArgs;
 use foxil::result::AnalysisResult;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::{Path, PathBuf};
-
-fn validate_xfoil_path(xfoil_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    if !Path::new(xfoil_path).exists() {
-        eprintln!(
-            "Error: XFoil executable not found at '{}'.",
-            xfoil_path.display()
-        );
-        eprintln!("Please specify the correct path using --xfoil-path, the XFOIL_PATH environment variable, or ensure it's in the default location.");
-        return Err(format!("XFoil executable not found: {}", xfoil_path.display()).into());
-    }
-    Ok(())
-}
 
 pub fn display_analysis_summary(args: &SweepArgs, result: &AnalysisResult) {
     println!("\n--- Optimal Aerodynamic Performance (Sweep) ---");
