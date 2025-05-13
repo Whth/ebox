@@ -1,7 +1,6 @@
 mod utils;
 
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::utils::setup_progress_bar;
@@ -82,7 +81,7 @@ struct SweepArgs {
     aoa_step: f64,
 
     /// Output CSV file path.
-    #[arg(short = "c", long, required = false)]
+    #[arg(short, long, required = false)]
     output_csv: Option<PathBuf>,
 }
 
@@ -135,8 +134,8 @@ struct SearchNacaArgs {
     aoa_step: f64,
 
     /// Output JSON file path for NACA code and best AoA data.
-    #[arg(short = 'o', long, default_value = "naca_search_results.json")]
-    output_json: String,
+    #[arg(short = 'o', long, default_value = "naca_search_results.csv")]
+    output_csv: String,
 
     /// Max camber percentages (M) for NACA 4-digit series (e.g., "0,2,4").
     #[arg(long, value_parser = clap::value_parser!(u8), num_args = 1.., value_delimiter = ',', default_value = "0,1,2,3,4,5,6,7,8,9"
@@ -268,18 +267,28 @@ fn generate_naca_codes(args: &SearchNacaArgs) -> HashSet<String> {
     symmetric_codes.chain(cambered_codes).collect()
 }
 
+// Helper struct for storing the best aerodynamic performance data for a NACA airfoil
+#[derive(Debug, Clone)]
+struct NacaBestAerodynamicPerformance {
+    naca_code: String,
+    aoa: f64,
+    cl: f64,
+    cd: f64,
+    ld_ratio: f64,
+}
+
 fn analyze_single_naca(
     naca_code_str: &str,
     xfoil_path: &PathBuf,
     search_args: &SearchNacaArgs,
-) -> Option<(String, f64)> {
+) -> Option<NacaBestAerodynamicPerformance> {
     let runner_result = FoxConfig::new(xfoil_path)
         .aoa_range(
             search_args.min_aoa,
             search_args.max_aoa,
             search_args.aoa_step,
         )
-        .polar_accumulation(search_args.bulk_dir.join(naca_code_str))
+        .polar_accumulation(search_args.bulk_dir.join(format!("{}", naca_code_str))) // Unique polar file for this NACA
         .reynolds(search_args.reynolds as usize)
         .naca(naca_code_str)
         .get_runner();
@@ -288,23 +297,29 @@ fn analyze_single_naca(
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "Failed to create XFoil runner for {}: {}. Skipping.",
+                "Failed to create XFoil runner for NACA {}: {}. Skipping.",
                 naca_code_str, e
             );
             return None;
         }
     };
 
-    let dispatch_result = xfoil_runner
-        .dispatch()
-        .expect("Failed to dispatch XFoil")
-        .get_output();
+    let dispatch_result = xfoil_runner.dispatch();
 
     let analysis_points = match dispatch_result {
-        Ok(res) => res.export(),
+        Ok(dispatched_runner) => match dispatched_runner.get_output() {
+            Ok(output) => output.export(),
+            Err(e) => {
+                eprintln!(
+                    "Failed to get output for NACA {}: {}. This might be due to non-convergence or invalid airfoil geometry. Skipping.",
+                    naca_code_str, e
+                );
+                return None;
+            }
+        },
         Err(e) => {
             eprintln!(
-                "XFoil dispatch failed for {}: {}. This might be due to non-convergence or invalid airfoil geometry. Skipping.",
+                "XFoil dispatch command failed for NACA {}: {}. Skipping.",
                 naca_code_str, e
             );
             return None;
@@ -321,7 +336,7 @@ fn analyze_single_naca(
 
     analysis_points
         .into_iter()
-        .filter(|ap| ap.ld_ratio.is_finite() && ap.ld_ratio > 0.0)
+        .filter(|ap| ap.ld_ratio.is_finite() && ap.ld_ratio > 0.0) // Ensure L/D is valid and positive
         .max_by(|a, b| a.ld_ratio.total_cmp(&b.ld_ratio))
         .map(|best_result| {
             println!(
@@ -332,34 +347,59 @@ fn analyze_single_naca(
                 best_result.cl,
                 best_result.cd
             );
-            (naca_code_str.to_string(), best_result.aoa)
+            NacaBestAerodynamicPerformance {
+                naca_code: naca_code_str.to_string(),
+                aoa: best_result.aoa,
+                cl: best_result.cl,
+                cd: best_result.cd,
+                ld_ratio: best_result.ld_ratio,
+            }
         })
         .or_else(|| {
             println!(
-                "Could not find a best L/D (with L/D > 0) for NACA {}. Skipping.",
+                "Could not find a best L/D (with L/D > 0 and finite) for NACA {}. Skipping.",
                 naca_code_str
             );
             None
         })
 }
 
-fn write_naca_search_results_to_json(
-    results_map: &HashMap<String, f64>,
-    output_json_path: &str,
+fn write_naca_search_results_to_csv(
+    results: &[NacaBestAerodynamicPerformance],
+    output_csv_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Writing search results to {}...", output_json_path);
-    let file = File::create(output_json_path)?;
-    serde_json::to_writer_pretty(file, results_map)?;
+    println!("Writing search results to {}...", output_csv_path);
+    let mut wtr = csv::WriterBuilder::new().from_path(output_csv_path)?;
+
+    wtr.write_record(&[
+        "naca_code",
+        "best_aoa",
+        "cl_at_best_aoa",
+        "cd_at_best_aoa",
+        "max_ld_ratio",
+    ])?;
+
+    for record in results {
+        wtr.write_record(&[
+            &record.naca_code,
+            &record.aoa.to_string(),
+            &record.cl.to_string(),
+            &record.cd.to_string(),
+            &format!("{:.5}", record.ld_ratio),
+        ])?;
+    }
+    wtr.flush()?;
+
     println!(
         "NACA search completed. Results saved to {}.",
-        output_json_path
+        output_csv_path
     );
     Ok(())
 }
 
 fn handle_search_naca_command(
     xfoil_path: &PathBuf,
-    args: &SearchNacaArgs,
+    args: &SearchNacaArgs, // args.output_json will be used as the CSV file path
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "Starting NACA search: Re={}, AoA range [{:.1}°, {:.1}°], step {:.2}°",
@@ -379,13 +419,16 @@ fn handle_search_naca_command(
     }
     println!("Generated {} unique NACA codes to process.", total_nacas);
 
-    let results_map: HashMap<String, f64> = naca_codes_to_process
-        .par_iter() // HashSet's par_iter yields &String
+    let best_performances: Vec<NacaBestAerodynamicPerformance> = naca_codes_to_process
+        .par_iter()
         .progress_with(setup_progress_bar(total_nacas as u64, "Searching best AoA"))
         .filter_map(|naca_code| analyze_single_naca(naca_code, xfoil_path, args))
         .collect();
 
-    write_naca_search_results_to_json(&results_map, &args.output_json)?;
+    // Use the output_json field from SearchNacaArgs as the path for the CSV file.
+    // The name of the field in SearchNacaArgs is assumed to remain `output_json` for now,
+    // but its help text and purpose have effectively changed.
+    write_naca_search_results_to_csv(&best_performances, &args.output_csv)?;
 
     Ok(())
 }
