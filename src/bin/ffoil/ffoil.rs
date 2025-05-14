@@ -9,7 +9,6 @@ use foxil::result::AnalysisResult;
 use foxil::FoxConfig;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
-// serde_json is used, IDE will handle import or it's part of common project dependencies.
 
 #[derive(Debug, Parser)]
 #[command(
