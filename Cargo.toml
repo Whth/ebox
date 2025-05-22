@@ -1,6 +1,6 @@
 [package]
 name = "ebox"
-version = "0.1.30"
+version = "0.1.31"
 edition = "2021"
 
 [dependencies]
@@ -47,6 +47,8 @@ polars = { version = "0.47.1", features = ["csv", "dtype-categorical", "lazy", "
 scirs2-metrics = "0.1.0-alpha.2"
 scirs2 = "0.1.0-alpha.2"
 openblas-src = { version = "0.10.11", features = ["system"] }
+toml_edit = "0.22.26"
+semver = { version = "1.0.26", features = ["serde"] }
 
 [workspace]
 package = { }
@@ -220,3 +222,6 @@ path = "src/bin/fof.rs"
 [[bin]]
 name = "thernam"
 path = "src/bin/thernam.rs"
+[[bin]]
+name = "verbu"
+path = "src/bin/verbu.rs"
