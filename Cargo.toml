@@ -42,13 +42,11 @@ netcdf = { version = "0.11.0", features = ["static"] }
 ndarray = { version = "0.16.1", features = ["rayon"] }
 foxil = { path = "src/bin/ffoil/foxil" }
 kmeans = "2.0.0"
-markov = "1.1.0"
 polars = { version = "0.47.1", features = ["csv", "dtype-categorical", "lazy", "ndarray"] }
 scirs2-metrics = "0.1.0-alpha.2"
-scirs2 = "0.1.0-alpha.2"
-openblas-src = { version = "0.10.11", features = ["system"] }
 toml_edit = "0.22.26"
 semver = { version = "1.0.26", features = ["serde"] }
+git2 = "0.20.2"
 
 [workspace]
 package = { }

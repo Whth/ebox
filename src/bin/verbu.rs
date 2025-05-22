@@ -3,7 +3,6 @@ use glob::glob;
 use semver::{BuildMetadata, Prerelease, Version};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use toml_edit::{DocumentMut, Item};
 
 /// Increment patch version number.
@@ -32,7 +31,7 @@ pub fn increment_major(version: &mut Version) {
 #[command(
     author,
     version,
-    about = "A CLI tool to bump version in pyproject.toml for multiple projects, with glob support and optional git check.",
+    about = "A CLI tool to bump version in pyproject.toml for multiple projects, with glob support.",
     long_about = None
 )]
 struct Args {
@@ -51,87 +50,16 @@ struct Args {
     /// Make the version a release version (removes pre-release and build metadata)
     #[arg(short = 'r', long, default_value_t = false)]
     release: bool,
-
-    /// Only bump version if git status is clean for the project directory
-    #[arg(short = 'g', long, default_value_t = false)]
-    git_check: bool,
 }
 
-/// Checks if the Git repository at the given path is dirty or not a valid git repo for checking.
-/// Returns Ok(true) if dirty/unsuitable, Ok(false) if clean.
-/// Returns Err if the git command itself fails for other reasons.
-fn is_git_repo_dirty(project_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let output_result = Command::new("git")
-        .current_dir(project_path)
-        .arg("status")
-        .arg("--porcelain")
-        .output();
-
-    match output_result {
-        Ok(output) => {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if stderr.to_lowercase().contains("not a git repository") {
-                    eprintln!(
-                        "Warning: {} is not a git repository. Skipping version bump due to --git-check.",
-                        project_path.display()
-                    );
-                    return Ok(true); // Treat as "cannot confirm clean" / "dirty" for decision logic
-                }
-                return Err(format!(
-                    "git status command failed for '{}' with status {}: {}",
-                    project_path.display(),
-                    output.status,
-                    stderr
-                )
-                .into());
-            }
-            if !output.stdout.is_empty() {
-                eprintln!(
-                    "Warning: {} has uncommitted changes. Skipping version bump due to --git-check.",
-                    project_path.display()
-                );
-                return Ok(true); // Dirty
-            }
-            Ok(false) // Clean
-        }
-        Err(e) => Err(format!(
-            "Failed to execute git command for '{}': {}",
-            project_path.display(),
-            e
-        )
-        .into()),
-    }
-}
-
-/// Processes a single project directory: checks git status (if requested),
-/// verifies `pyproject.toml` existence, and calls `bump_version`.
+/// Processes a single project directory: verifies `pyproject.toml` existence, and calls `bump_version`.
 /// Returns `Ok(true)` if version was bumped, `Ok(false)` if skipped,
 /// or `Err` for critical errors.
 fn process_project_directory(
     project_path: &Path,
     bump_level: u8,
     release: bool,
-    git_check: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    if git_check {
-        match is_git_repo_dirty(project_path) {
-            Ok(true) => {
-                // Message already printed by is_git_repo_dirty or if it's just dirty
-                return Ok(false); // Skipped due to git status
-            }
-            Ok(false) => {
-                println!(
-                    "Git status clean for {}. Proceeding.",
-                    project_path.display()
-                );
-            }
-            Err(e) => {
-                return Err(e); // Propagate critical git errors
-            }
-        }
-    }
-
     let pyproject_path = project_path.join("pyproject.toml");
     if !pyproject_path.exists() {
         eprintln!(
@@ -162,7 +90,6 @@ fn process_glob_pattern(
     project_glob_pattern: &str,
     bump_level: u8,
     release: bool,
-    git_check: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let entries = match glob(project_glob_pattern) {
         Ok(paths) => paths,
@@ -195,12 +122,12 @@ fn process_glob_pattern(
         }
         found_paths_for_pattern = true;
 
-        match process_project_directory(&path, bump_level, release, git_check) {
+        match process_project_directory(&path, bump_level, release) {
             Ok(true) => {
                 processed_any_project_this_pattern = true;
             }
             Ok(false) => {
-                // Project was skipped (e.g., dirty git, no pyproject.toml), continue to the next.
+                // Project was skipped (e.g., no pyproject.toml), continue to the next.
             }
             Err(e) => {
                 // Critical error during processing of a project, propagate to stop all operations.
@@ -225,12 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut processed_any_project_overall = false;
 
     for project_glob_pattern in &args.projects {
-        match process_glob_pattern(
-            project_glob_pattern,
-            args.bump_level,
-            args.release,
-            args.git_check,
-        ) {
+        match process_glob_pattern(project_glob_pattern, args.bump_level, args.release) {
             Ok(processed_this_pattern) => {
                 if processed_this_pattern {
                     processed_any_project_overall = true;
@@ -330,7 +252,9 @@ fn update_version_in_toml(
     let project_table = doc
         .get_mut("project")
         .and_then(Item::as_table_mut)
-        .ok_or_else(|| Box::<dyn std::error::Error>::from("'project' table not found in pyproject.toml"))?;
+        .ok_or_else(|| {
+            Box::<dyn std::error::Error>::from("'project' table not found in pyproject.toml")
+        })?;
 
     project_table["version"] = toml_edit::value(new_version);
     Ok(())
