@@ -1,4 +1,5 @@
 use clap::Parser;
+use git2::{Repository, StatusOptions};
 use glob::glob;
 use semver::{BuildMetadata, Prerelease, Version};
 use std::fs;
@@ -50,6 +51,81 @@ struct Args {
     /// Make the version a release version (removes pre-release and build metadata)
     #[arg(short = 'r', long, default_value_t = false)]
     release: bool,
+
+    /// Bump version only if there are git changes in the project directory
+    #[arg(
+        short,
+        long,
+        default_value_t = false,
+        help = "Bump version only if there are git changes in the project directory"
+    )]
+    git_aware: bool,
+}
+
+/// Checks if there are any git changes (modified, added, untracked, etc.)
+/// within the specified project path.
+fn has_git_changes_in_path(project_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    // Discover the repository. Try from project_path first, then current directory.
+    let repo = match Repository::discover(project_path) {
+        Ok(r) => r,
+        Err(_) => Repository::discover(".").map_err(|e| {
+            format!(
+                "Failed to discover git repository. Ensure you are in a git repository and project paths are correct. Error: {}",
+                e
+            )
+        })?,
+    };
+
+    let repo_workdir_raw = repo
+        .workdir()
+        .ok_or("Git repository is bare, cannot check for changes.")?;
+
+    // Canonicalize project_path to get an absolute, normalized path.
+    let canonical_project_path = project_path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize project path '{}': {}. Ensure path is valid.",
+            project_path.display(),
+            e
+        )
+    })?;
+
+    // Canonicalize repo_workdir as well to ensure consistent path formats for strip_prefix,
+    // especially for handling `\\?\` prefixes on Windows.
+    let canonical_repo_workdir = repo_workdir_raw.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize repository workdir '{}': {}",
+            repo_workdir_raw.display(),
+            e
+        )
+    })?;
+
+    // Get project_path relative to the repository's workdir.
+    let relative_project_path = canonical_project_path
+        .strip_prefix(&canonical_repo_workdir)
+        .map_err(|_| {
+            format!(
+                "Project path '{}' (resolved to '{}') is not inside the git repository workdir '{}' (resolved to '{}'). Ensure the project path is a subdirectory of the repository.",
+                project_path.display(),
+                canonical_project_path.display(),
+                repo_workdir_raw.display(),
+                canonical_repo_workdir.display()
+            )
+        })?;
+
+    let mut status_opts = StatusOptions::new();
+    status_opts.include_untracked(true);
+    status_opts.recurse_untracked_dirs(true);
+
+    // If relative_project_path is empty, it means project_path is the repo root.
+    // In this case, we don't set a pathspec, so it checks all files in the repo.
+    if !relative_project_path.as_os_str().is_empty() {
+        status_opts.pathspec(relative_project_path);
+    }
+
+    let statuses = repo.statuses(Some(&mut status_opts))?;
+
+    // If statuses is not empty, there are changes or untracked files matching the scope.
+    Ok(!statuses.is_empty())
 }
 
 /// Processes a single project directory: verifies `pyproject.toml` existence, and calls `bump_version`.
@@ -59,6 +135,7 @@ fn process_project_directory(
     project_path: &Path,
     bump_level: u8,
     release: bool,
+    git_aware: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let pyproject_path = project_path.join("pyproject.toml");
     if !pyproject_path.exists() {
@@ -67,6 +144,32 @@ fn process_project_directory(
             project_path.display()
         );
         return Ok(false); // Skipped due to missing pyproject.toml
+    }
+
+    if git_aware {
+        match has_git_changes_in_path(project_path) {
+            Ok(true) => {
+                println!(
+                    "Git changes detected in {}. Proceeding with version bump.",
+                    project_path.display()
+                );
+            }
+            Ok(false) => {
+                println!(
+                    "No git changes detected in {}. Skipping version bump (git-aware mode).",
+                    project_path.display()
+                );
+                return Ok(false); // Skipped due to no git changes
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Error checking git status for {}: {}. Aborting bump for this project.",
+                    project_path.display(),
+                    e
+                )
+                .into());
+            }
+        }
     }
 
     println!("Processing project: {}", project_path.display());
@@ -90,6 +193,7 @@ fn process_glob_pattern(
     project_glob_pattern: &str,
     bump_level: u8,
     release: bool,
+    git_aware: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let entries = match glob(project_glob_pattern) {
         Ok(paths) => paths,
@@ -122,12 +226,12 @@ fn process_glob_pattern(
         }
         found_paths_for_pattern = true;
 
-        match process_project_directory(&path, bump_level, release) {
+        match process_project_directory(&path, bump_level, release, git_aware) {
             Ok(true) => {
                 processed_any_project_this_pattern = true;
             }
             Ok(false) => {
-                // Project was skipped (e.g., no pyproject.toml), continue to the next.
+                // Project was skipped (e.g., no pyproject.toml or no git changes in git_aware mode), continue to the next.
             }
             Err(e) => {
                 // Critical error during processing of a project, propagate to stop all operations.
@@ -152,7 +256,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut processed_any_project_overall = false;
 
     for project_glob_pattern in &args.projects {
-        match process_glob_pattern(project_glob_pattern, args.bump_level, args.release) {
+        match process_glob_pattern(
+            project_glob_pattern,
+            args.bump_level,
+            args.release,
+            args.git_aware,
+        ) {
             Ok(processed_this_pattern) => {
                 if processed_this_pattern {
                     processed_any_project_overall = true;
@@ -167,7 +276,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !processed_any_project_overall {
-        return Err("No 'pyproject.toml' files were processed. Check paths and patterns.".into());
+        let mut error_message = "No project versions were bumped.".to_string();
+        // Check if default single project "." was specified and if pyproject.toml is missing.
+        let is_default_single_project_dot = args.projects.len() == 1 && args.projects[0] == ".";
+        if is_default_single_project_dot && !Path::new("pyproject.toml").exists() {
+            error_message = "No 'pyproject.toml' found in the current directory.".to_string();
+        } else if args.git_aware {
+            error_message.push_str(" In git-aware mode, this can also occur if no targeted projects had relevant git changes.");
+        }
+        error_message.push_str(" Please check paths, glob patterns, and ensure 'pyproject.toml' exists in target project directories.");
+        return Err(error_message.into());
     }
 
     Ok(())
