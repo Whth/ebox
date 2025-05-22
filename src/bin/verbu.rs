@@ -1,4 +1,6 @@
 use clap::Parser;
+use colored::*;
+// Added for colorful output
 use git2::{Repository, StatusOptions};
 use glob::glob;
 use semver::{BuildMetadata, Prerelease, Version};
@@ -140,8 +142,10 @@ fn process_project_directory(
     let pyproject_path = project_path.join("pyproject.toml");
     if !pyproject_path.exists() {
         eprintln!(
-            "pyproject.toml not found in {}. Skipping.",
-            project_path.display()
+            "{} {}: pyproject.toml not found in {}. Skipping.",
+            "⚠️".yellow(),
+            "Skipping".yellow(),
+            project_path.display().to_string().cyan()
         );
         return Ok(false); // Skipped due to missing pyproject.toml
     }
@@ -150,20 +154,31 @@ fn process_project_directory(
         match has_git_changes_in_path(project_path) {
             Ok(true) => {
                 println!(
-                    "Git changes detected in {}. Proceeding with version bump.",
-                    project_path.display()
+                    "{} {}: Git changes detected in {}. Proceeding.",
+                    "✅".green(),
+                    "Info".green(),
+                    project_path.display().to_string().cyan()
                 );
             }
             Ok(false) => {
                 println!(
-                    "No git changes detected in {}. Skipping version bump (git-aware mode).",
-                    project_path.display()
+                    "{} {}: No git changes detected in {}. Skipping version bump (git-aware mode).",
+                    "ℹ️".blue(),
+                    "Skipping".blue(),
+                    project_path.display().to_string().cyan()
                 );
                 return Ok(false); // Skipped due to no git changes
             }
             Err(e) => {
+                eprintln!(
+                    "{} {}: Error checking git status for {}: {}. Aborting bump for this project.",
+                    "❌".red(),
+                    "Error".red(),
+                    project_path.display().to_string().cyan(),
+                    e.to_string().red()
+                );
                 return Err(format!(
-                    "Error checking git status for {}: {}. Aborting bump for this project.",
+                    "Error checking git status for {}: {}",
                     project_path.display(),
                     e
                 )
@@ -172,7 +187,12 @@ fn process_project_directory(
         }
     }
 
-    println!("Processing project: {}", project_path.display());
+    println!(
+        "{} {}: {}",
+        "⚙️".blue(),
+        "Processing".blue(),
+        project_path.display().to_string().cyan()
+    );
     bump_version(
         pyproject_path.to_str().ok_or_else(|| {
             format!(
@@ -199,8 +219,11 @@ fn process_glob_pattern(
         Ok(paths) => paths,
         Err(e) => {
             eprintln!(
-                "Invalid glob pattern '{}': {}. Skipping this pattern.",
-                project_glob_pattern, e
+                "{} {}: Invalid glob pattern '{}': {}. Skipping this pattern.",
+                "❌".red(),
+                "Error".red(),
+                project_glob_pattern.yellow(),
+                e.to_string().red()
             );
             return Ok(false); // Not a critical error for the whole app, just this pattern.
         }
@@ -214,8 +237,11 @@ fn process_glob_pattern(
             Ok(p) => p,
             Err(e) => {
                 eprintln!(
-                    "Error accessing path from glob pattern '{}': {}. Skipping this item.",
-                    project_glob_pattern, e
+                    "{} {}: Error accessing path from glob pattern '{}': {}. Skipping this item.",
+                    "❌".red(),
+                    "Error".red(),
+                    project_glob_pattern.yellow(),
+                    e.to_string().red()
                 );
                 continue; // Skip this problematic entry, continue with others in the pattern.
             }
@@ -231,10 +257,10 @@ fn process_glob_pattern(
                 processed_any_project_this_pattern = true;
             }
             Ok(false) => {
-                // Project was skipped (e.g., no pyproject.toml or no git changes in git_aware mode), continue to the next.
+                // Project was skipped (e.g., no pyproject.toml or no git changes in git_aware mode), message already printed.
             }
             Err(e) => {
-                // Critical error during processing of a project, propagate to stop all operations.
+                // Critical error during processing of a project, message already printed. Propagate to stop all operations.
                 return Err(e);
             }
         }
@@ -242,8 +268,10 @@ fn process_glob_pattern(
 
     if !found_paths_for_pattern {
         eprintln!(
-            "Warning: No directories found matching glob pattern '{}'",
-            project_glob_pattern
+            "{} {}: No directories found matching glob pattern '{}'",
+            "⚠️".yellow(),
+            "Warning".yellow(),
+            project_glob_pattern.yellow()
         );
     }
 
@@ -268,16 +296,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(e) => {
-                // A critical error occurred in process_glob_pattern (likely propagated from process_project_directory)
-                // Stop all further processing and return the error.
-                return Err(e);
+                // The specific error message should have already been printed with colors.
+                // Return an error that indicates context, preserving the original error cause.
+                return Err(format!(
+                    "Aborted due to error while processing pattern '{}'. Original error: {}",
+                    project_glob_pattern.yellow(),
+                    e
+                )
+                .into());
             }
         }
     }
 
     if !processed_any_project_overall {
         let mut error_message = "No project versions were bumped.".to_string();
-        // Check if default single project "." was specified and if pyproject.toml is missing.
         let is_default_single_project_dot = args.projects.len() == 1 && args.projects[0] == ".";
         if is_default_single_project_dot && !Path::new("pyproject.toml").exists() {
             error_message = "No 'pyproject.toml' found in the current directory.".to_string();
@@ -285,6 +317,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             error_message.push_str(" In git-aware mode, this can also occur if no targeted projects had relevant git changes.");
         }
         error_message.push_str(" Please check paths, glob patterns, and ensure 'pyproject.toml' exists in target project directories.");
+
+        eprintln!("{} {}", "❌".red(), error_message.red());
+        // Return the error message; it will be printed by Rust's default error handler if main returns Err.
         return Err(error_message.into());
     }
 
@@ -308,6 +343,7 @@ pub fn bump_version(
 
     let version_str = get_version_from_toml(&doc)?;
     let mut version = Version::parse(version_str)?;
+    let old_version_str = version.to_string(); // For logging
 
     // Step 1: Apply numeric increment if level > 0
     match level {
@@ -316,7 +352,11 @@ pub fn bump_version(
         3 => increment_major(&mut version),
         0 => {} // No numeric change based on level itself for this step
         _ => {
-            // Changed from std::process::exit(1) to returning an error
+            eprintln!(
+                "{} {}: Too many -i flags: use up to 3",
+                "❌".red(),
+                "Error".red()
+            );
             return Err("Too many -i flags: use up to 3".into());
         }
     }
@@ -350,7 +390,14 @@ pub fn bump_version(
 
     update_version_in_toml(&mut doc, version.to_string())?;
     fs::write(pyproject_path, doc.to_string())?;
-    println!("Bumped version in {} to {}", pyproject_path, version);
+    println!(
+        "{} {} in {} from {} to {}",
+        "🎉".green(),
+        "Bumped version".green(),
+        pyproject_path.cyan(),
+        old_version_str.yellow(),
+        version.to_string().bold().green()
+    );
     Ok(())
 }
 
