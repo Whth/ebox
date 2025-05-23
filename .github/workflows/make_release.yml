@@ -13,7 +13,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      - name: Install nightly rust
+        run: |
+          rustup default nightly
       - name: Install deps
         uses: winpax/scoop-setup@v1.0.0
         with:
