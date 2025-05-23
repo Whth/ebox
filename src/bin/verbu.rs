@@ -3,6 +3,8 @@ use colored::*;
 // Added for colorful output
 use git2::{Repository, StatusOptions};
 use glob::glob;
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use semver::{BuildMetadata, Prerelease, Version};
 use std::fs;
 use std::path::Path;
@@ -230,11 +232,25 @@ fn process_glob_pattern(
     };
 
     let mut found_paths_for_pattern = false;
-    let mut processed_any_project_this_pattern = false;
 
-    for entry in entries {
-        let path = match entry {
-            Ok(p) => p,
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["-", "\\", "|", "/"])
+            .template("{spinner} {wide_msg}")
+            .unwrap(),
+    );
+
+    let paths: Vec<_> = entries
+        .filter_map(|entry| match entry {
+            Ok(p) => {
+                if p.is_dir() {
+                    found_paths_for_pattern = true;
+                    Some(p)
+                } else {
+                    None
+                }
+            }
             Err(e) => {
                 eprintln!(
                     "{} {}: Error accessing path from glob pattern '{}': {}. Skipping this item.",
@@ -243,39 +259,41 @@ fn process_glob_pattern(
                     project_glob_pattern.yellow(),
                     e.to_string().red()
                 );
-                continue; // Skip this problematic entry, continue with others in the pattern.
+                None
             }
-        };
+        })
+        .collect();
 
-        if !path.is_dir() {
-            continue; // Skip files, only process directories.
+    if paths.is_empty() {
+        if !found_paths_for_pattern {
+            eprintln!(
+                "{} {}: No directories found matching glob pattern '{}'",
+                "⚠️".yellow(),
+                "Warning".yellow(),
+                project_glob_pattern.yellow()
+            );
         }
-        found_paths_for_pattern = true;
-
-        match process_project_directory(&path, bump_level, release, git_aware) {
-            Ok(true) => {
-                processed_any_project_this_pattern = true;
-            }
-            Ok(false) => {
-                // Project was skipped (e.g., no pyproject.toml or no git changes in git_aware mode), message already printed.
-            }
-            Err(e) => {
-                // Critical error during processing of a project, message already printed. Propagate to stop all operations.
-                return Err(e);
-            }
-        }
+        return Ok(false);
     }
 
-    if !found_paths_for_pattern {
-        eprintln!(
-            "{} {}: No directories found matching glob pattern '{}'",
-            "⚠️".yellow(),
-            "Warning".yellow(),
-            project_glob_pattern.yellow()
-        );
-    }
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    Ok(processed_any_project_this_pattern)
+    let results: Vec<_> = paths
+        .into_par_iter()
+        .progress_with(pb)
+        .map(
+            |path| match process_project_directory(&path, bump_level, release, git_aware) {
+                Ok(true) => Some(true),
+                Ok(false) => None,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    panic!("{}", e);
+                }
+            },
+        )
+        .collect();
+
+    Ok(!results.is_empty())
 }
 
 /// Main function entry point
