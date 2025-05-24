@@ -64,22 +64,35 @@ struct Args {
         help = "Bump version only if there are git changes in the project directory"
     )]
     git_aware: bool,
+    /// File extensions to watch for changes in git-aware mode (comma-separated)
+    #[arg(
+        short = 'w',
+        long,
+        default_value = "py,rs",
+        env = "WATCH_EXTENSIONS",
+        help = "File extensions to watch for changes in git-aware mode (comma-separated, e.g., 'py,rs,js')"
+    )]
+    watch_extensions: String,
 }
 
-/// Checks if there are any git changes (modified, added, untracked, etc.)
-/// within the specified project path.
-fn has_git_changes_in_path(project_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    // Discover the repository. Try from project_path first, then current directory.
-    let repo = match Repository::discover(project_path) {
-        Ok(r) => r,
-        Err(_) => Repository::discover(".").map_err(|e| {
+/// Discovers the git repository for the given project path.
+fn discover_repository(project_path: &Path) -> Result<Repository, Box<dyn std::error::Error>> {
+    Repository::discover(project_path).or_else(|_| {
+        Repository::discover(".").map_err(|e| {
             format!(
                 "Failed to discover git repository. Ensure you are in a git repository and project paths are correct. Error: {}",
                 e
             )
-        })?,
-    };
+            .into()
+        })
+    })
+}
 
+/// Gets the relative path of the project within the git repository.
+fn get_relative_project_path(
+    project_path: &Path,
+    repo: &Repository,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     let repo_workdir_raw = repo
         .workdir()
         .ok_or("Git repository is bare, cannot check for changes.")?;
@@ -104,8 +117,9 @@ fn has_git_changes_in_path(project_path: &Path) -> Result<bool, Box<dyn std::err
     })?;
 
     // Get project_path relative to the repository's workdir.
-    let relative_project_path = canonical_project_path
+    canonical_project_path
         .strip_prefix(&canonical_repo_workdir)
+        .map(|p| p.to_path_buf())
         .map_err(|_| {
             format!(
                 "Project path '{}' (resolved to '{}') is not inside the git repository workdir '{}' (resolved to '{}'). Ensure the project path is a subdirectory of the repository.",
@@ -114,7 +128,28 @@ fn has_git_changes_in_path(project_path: &Path) -> Result<bool, Box<dyn std::err
                 repo_workdir_raw.display(),
                 canonical_repo_workdir.display()
             )
-        })?;
+            .into()
+        })
+}
+
+/// Checks if a file has one of the allowed extensions.
+fn has_allowed_extension(file_path: &str, allowed_extensions: &[String]) -> bool {
+    if let Some(extension) = Path::new(file_path).extension() {
+        if let Some(ext_str) = extension.to_str() {
+            return allowed_extensions.iter().any(|allowed| allowed == ext_str);
+        }
+    }
+    false
+}
+
+/// Checks if there are any git changes (modified, added, untracked, etc.)
+/// within the specified project path, filtering by allowed file extensions.
+fn has_git_changes_in_path(
+    project_path: &Path,
+    allowed_extensions: &[String],
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let repo = discover_repository(project_path)?;
+    let relative_project_path = get_relative_project_path(project_path, &repo)?;
 
     let mut status_opts = StatusOptions::new();
     status_opts.include_untracked(true);
@@ -123,13 +158,21 @@ fn has_git_changes_in_path(project_path: &Path) -> Result<bool, Box<dyn std::err
     // If relative_project_path is empty, it means project_path is the repo root.
     // In this case, we don't set a pathspec, so it checks all files in the repo.
     if !relative_project_path.as_os_str().is_empty() {
-        status_opts.pathspec(relative_project_path);
+        status_opts.pathspec(&relative_project_path);
     }
 
     let statuses = repo.statuses(Some(&mut status_opts))?;
 
-    // If statuses is not empty, there are changes or untracked files matching the scope.
-    Ok(!statuses.is_empty())
+    // Check if any changed files have allowed extensions
+    for entry in statuses.iter() {
+        if let Some(file_path) = entry.path() {
+            if has_allowed_extension(file_path, allowed_extensions) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 /// Processes a single project directory: verifies `pyproject.toml` existence, and calls `bump_version`.
@@ -140,6 +183,7 @@ fn process_project_directory(
     bump_level: u8,
     release: bool,
     git_aware: bool,
+    allowed_extensions: &[String],
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let pyproject_path = project_path.join("pyproject.toml");
     if !pyproject_path.exists() {
@@ -153,21 +197,23 @@ fn process_project_directory(
     }
 
     if git_aware {
-        match has_git_changes_in_path(project_path) {
+        match has_git_changes_in_path(project_path, allowed_extensions) {
             Ok(true) => {
                 println!(
-                    "{} {}: Git changes detected in {}. Proceeding.",
+                    "{} {}: Git changes detected in {} (watching: {}). Proceeding.",
                     "✅".green(),
                     "Info".green(),
-                    project_path.display().to_string().cyan()
+                    project_path.display().to_string().cyan(),
+                    allowed_extensions.join(",").yellow()
                 );
             }
             Ok(false) => {
                 println!(
-                    "{} {}: No git changes detected in {}. Skipping version bump (git-aware mode).",
+                    "{} {}: No git changes detected in {} for watched extensions ({}). Skipping version bump (git-aware mode).",
                     "ℹ️".blue(),
                     "Skipping".blue(),
-                    project_path.display().to_string().cyan()
+                    project_path.display().to_string().cyan(),
+                    allowed_extensions.join(",").yellow()
                 );
                 return Ok(false); // Skipped due to no git changes
             }
@@ -216,6 +262,7 @@ fn process_glob_pattern(
     bump_level: u8,
     release: bool,
     git_aware: bool,
+    allowed_extensions: &[String],
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let entries = match glob(project_glob_pattern) {
         Ok(paths) => paths,
@@ -281,16 +328,22 @@ fn process_glob_pattern(
     let results: Vec<_> = paths
         .into_par_iter()
         .progress_with(pb)
-        .map(
-            |path| match process_project_directory(&path, bump_level, release, git_aware) {
+        .map(|path| {
+            match process_project_directory(
+                &path,
+                bump_level,
+                release,
+                git_aware,
+                allowed_extensions,
+            ) {
                 Ok(true) => Some(true),
                 Ok(false) => None,
                 Err(e) => {
                     eprintln!("{}", e);
                     panic!("{}", e);
                 }
-            },
-        )
+            }
+        })
         .collect();
 
     Ok(!results.is_empty())
@@ -301,12 +354,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut processed_any_project_overall = false;
 
+    // Parse allowed extensions from the command line argument
+    let allowed_extensions: Vec<String> = args
+        .watch_extensions
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     for project_glob_pattern in &args.projects {
         match process_glob_pattern(
             project_glob_pattern,
             args.bump_level,
             args.release,
             args.git_aware,
+            &allowed_extensions,
         ) {
             Ok(processed_this_pattern) => {
                 if processed_this_pattern {
@@ -332,7 +394,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if is_default_single_project_dot && !Path::new("pyproject.toml").exists() {
             error_message = "No 'pyproject.toml' found in the current directory.".to_string();
         } else if args.git_aware {
-            error_message.push_str(" In git-aware mode, this can also occur if no targeted projects had relevant git changes.");
+            error_message.push_str(&format!(" In git-aware mode, this can also occur if no targeted projects had relevant git changes for watched extensions ({}).", allowed_extensions.join(",")));
         }
         error_message.push_str(" Please check paths, glob patterns, and ensure 'pyproject.toml' exists in target project directories.");
 
