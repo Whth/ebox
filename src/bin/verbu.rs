@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use colored::*;
 // Added for colorful output
 use git2::{Repository, StatusOptions};
@@ -9,6 +9,68 @@ use semver::{BuildMetadata, Prerelease, Version};
 use std::fs;
 use std::path::Path;
 use toml_edit::{DocumentMut, Item};
+
+/// Supported project types
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum ProjectType {
+    /// Python project with pyproject.toml
+    Python,
+    /// Rust project with Cargo.toml
+    Cargo,
+    /// Node.js project with package.json
+    Node,
+    /// Auto-detect project type
+    Auto,
+}
+
+/// Project configuration for different project types
+#[derive(Clone)]
+pub(crate) struct ProjectConfig {
+    /// File name to look for
+    pub(crate) file_name: &'static str,
+    /// Path to version field in the configuration
+    pub(crate) version_path: Vec<&'static str>,
+}
+
+impl ProjectConfig {
+    fn for_type(project_type: ProjectType) -> Option<Self> {
+        match project_type {
+            ProjectType::Python => Some(ProjectConfig {
+                file_name: "pyproject.toml",
+                version_path: vec!["project", "version"],
+            }),
+            ProjectType::Cargo => Some(ProjectConfig {
+                file_name: "Cargo.toml",
+                version_path: vec!["package", "version"],
+            }),
+            ProjectType::Node => None, // JSON support would require additional dependencies
+            ProjectType::Auto => None, // Auto-detection handled separately
+        }
+    }
+
+    fn detect(project_path: &Path) -> Option<(ProjectType, Self)> {
+        // Try detection in order of preference
+        let configs = [
+            (
+                ProjectType::Python,
+                ProjectConfig::for_type(ProjectType::Python),
+            ),
+            (
+                ProjectType::Cargo,
+                ProjectConfig::for_type(ProjectType::Cargo),
+            ),
+        ];
+
+        for (project_type, config_opt) in configs {
+            if let Some(config) = config_opt {
+                if project_path.join(config.file_name).exists() {
+                    return Some((project_type, config));
+                }
+            }
+        }
+        None
+    }
+}
 
 /// Increment patch version number.
 /// Note: Pre-release and build metadata are handled by the calling `bump_version` function.
@@ -36,11 +98,11 @@ pub fn increment_major(version: &mut Version) {
 #[command(
     author,
     version,
-    about = "A CLI tool to bump version in pyproject.toml for multiple projects, with glob support.",
+    about = "A CLI tool to bump version in project configuration files for multiple projects, with glob support.",
     long_about = None
 )]
 struct Args {
-    /// Paths or glob patterns to project directories, each must contain pyproject.toml
+    /// Paths or glob patterns to project directories
     #[arg(default_value = ".", num_args = 0..)]
     projects: Vec<String>,
 
@@ -64,15 +126,26 @@ struct Args {
         help = "Bump version only if there are git changes in the project directory"
     )]
     git_aware: bool,
+
     /// File extensions to watch for changes in git-aware mode (comma-separated)
     #[arg(
         short = 'w',
         long,
-        default_value = "py,rs",
         env = "WATCH_EXTENSIONS",
         help = "File extensions to watch for changes in git-aware mode (comma-separated, e.g., 'py,rs,js')"
     )]
-    watch_extensions: String,
+    watch_extensions: Option<String>,
+
+    /// Project type to process
+    #[arg(
+        short = 't',
+        long,
+        value_enum,
+        default_value = "auto",
+        env = "PROJECT_TYPE",
+        help = "Project type to process (python, cargo, node, auto)"
+    )]
+    project_type: ProjectType,
 }
 
 /// Discovers the git repository for the given project path.
@@ -175,7 +248,7 @@ fn has_git_changes_in_path(
     Ok(false)
 }
 
-/// Processes a single project directory: verifies `pyproject.toml` existence, and calls `bump_version`.
+/// Processes a single project directory: detects project type, verifies config file existence, and calls `bump_version`.
 /// Returns `Ok(true)` if version was bumped, `Ok(false)` if skipped,
 /// or `Err` for critical errors.
 fn process_project_directory(
@@ -184,17 +257,50 @@ fn process_project_directory(
     release: bool,
     git_aware: bool,
     allowed_extensions: &[String],
+    project_type: ProjectType,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let pyproject_path = project_path.join("pyproject.toml");
-    if !pyproject_path.exists() {
-        eprintln!(
-            "{} {}: pyproject.toml not found in {}. Skipping.",
-            "⚠️".yellow(),
-            "Skipping".yellow(),
-            project_path.display().to_string().cyan()
-        );
-        return Ok(false); // Skipped due to missing pyproject.toml
-    }
+    // Determine project configuration
+    let (detected_type, config) = match project_type {
+        ProjectType::Auto => match ProjectConfig::detect(project_path) {
+            Some((detected_type, config)) => (detected_type, config),
+            None => {
+                eprintln!(
+                    "{} {}: No supported project configuration file found in {}. Skipping.",
+                    "⚠️".yellow(),
+                    "Skipping".yellow(),
+                    project_path.display().to_string().cyan()
+                );
+                return Ok(false);
+            }
+        },
+        specific_type => match ProjectConfig::for_type(specific_type) {
+            Some(config) => {
+                let config_path = project_path.join(config.file_name);
+                if !config_path.exists() {
+                    eprintln!(
+                        "{} {}: {} not found in {}. Skipping.",
+                        "⚠️".yellow(),
+                        "Skipping".yellow(),
+                        config.file_name.cyan(),
+                        project_path.display().to_string().cyan()
+                    );
+                    return Ok(false);
+                }
+                (specific_type, config)
+            }
+            None => {
+                eprintln!(
+                    "{} {}: Project type {:?} is not yet supported. Skipping.",
+                    "⚠️".yellow(),
+                    "Skipping".yellow(),
+                    specific_type
+                );
+                return Ok(false);
+            }
+        },
+    };
+
+    let config_path = project_path.join(config.file_name);
 
     if git_aware {
         match has_git_changes_in_path(project_path, allowed_extensions) {
@@ -236,20 +342,22 @@ fn process_project_directory(
     }
 
     println!(
-        "{} {}: {}",
+        "{} {} ({:?}): {}",
         "⚙️".blue(),
         "Processing".blue(),
+        detected_type,
         project_path.display().to_string().cyan()
     );
     bump_version(
-        pyproject_path.to_str().ok_or_else(|| {
+        config_path.to_str().ok_or_else(|| {
             format!(
                 "Path {} contains non-UTF8 characters",
-                pyproject_path.display()
+                config_path.display()
             )
         })?,
         bump_level,
         release,
+        &config,
     )?;
     Ok(true) // Successfully processed and bumped version
 }
@@ -263,6 +371,7 @@ fn process_glob_pattern(
     release: bool,
     git_aware: bool,
     allowed_extensions: &[String],
+    project_type: ProjectType,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let entries = match glob(project_glob_pattern) {
         Ok(paths) => paths,
@@ -335,6 +444,7 @@ fn process_glob_pattern(
                 release,
                 git_aware,
                 allowed_extensions,
+                project_type,
             ) {
                 Ok(true) => Some(true),
                 Ok(false) => None,
@@ -354,9 +464,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut processed_any_project_overall = false;
 
-    // Parse allowed extensions from the command line argument
+    // Determine default extensions based on project type
+    let default_extensions = match args.project_type {
+        ProjectType::Python => "py",
+        ProjectType::Cargo => "rs",
+        ProjectType::Node => "js,ts",
+        ProjectType::Auto => "py,rs,js,ts",
+    };
+
+    // Parse allowed extensions from the command line argument or use defaults
     let allowed_extensions: Vec<String> = args
         .watch_extensions
+        .as_deref()
+        .unwrap_or(default_extensions)
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -369,6 +489,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.release,
             args.git_aware,
             &allowed_extensions,
+            args.project_type,
         ) {
             Ok(processed_this_pattern) => {
                 if processed_this_pattern {
@@ -391,12 +512,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !processed_any_project_overall {
         let mut error_message = "No project versions were bumped.".to_string();
         let is_default_single_project_dot = args.projects.len() == 1 && args.projects[0] == ".";
-        if is_default_single_project_dot && !Path::new("pyproject.toml").exists() {
-            error_message = "No 'pyproject.toml' found in the current directory.".to_string();
+        if is_default_single_project_dot {
+            error_message.push_str(
+                " No supported project configuration file found in the current directory.",
+            );
         } else if args.git_aware {
             error_message.push_str(&format!(" In git-aware mode, this can also occur if no targeted projects had relevant git changes for watched extensions ({}).", allowed_extensions.join(",")));
         }
-        error_message.push_str(" Please check paths, glob patterns, and ensure 'pyproject.toml' exists in target project directories.");
+        error_message.push_str(" Please check paths, glob patterns, and ensure a supported project configuration file exists in target project directories.");
 
         eprintln!("{} {}", "❌".red(), error_message.red());
         // Return the error message; it will be printed by Rust's default error handler if main returns Err.
@@ -410,18 +533,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// # Arguments
 ///
-/// * `pyproject_path` - Path to the `pyproject.toml` file.
+/// * `config_path` - Path to the project configuration file.
 /// * `level` - Bump level (0~3), corresponding to dev/patch/minor/major.
 /// * `release_mode` - If true, makes the version a release version (removes pre-release/build).
-pub fn bump_version(
-    pyproject_path: &str,
+/// * `config` - Project configuration containing version path information.
+fn bump_version(
+    config_path: &str,
     level: u8,
     release_mode: bool,
+    config: &ProjectConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let contents = fs::read_to_string(pyproject_path)?;
+    let contents = fs::read_to_string(config_path)?;
     let mut doc = contents.parse::<DocumentMut>()?;
 
-    let version_str = get_version_from_toml(&doc)?;
+    let version_str = get_version_from_toml(&doc, &config.version_path)?;
     let mut version = Version::parse(version_str)?;
     let old_version_str = version.to_string(); // For logging
 
@@ -468,40 +593,68 @@ pub fn bump_version(
         version.build = BuildMetadata::EMPTY;
     }
 
-    update_version_in_toml(&mut doc, version.to_string())?;
-    fs::write(pyproject_path, doc.to_string())?;
+    update_version_in_toml(&mut doc, version.to_string(), &config.version_path)?;
+    fs::write(config_path, doc.to_string())?;
     println!(
         "{} {} in {} from {} to {}",
         "🎉".green(),
         "Bumped version".green(),
-        pyproject_path.cyan(),
+        config_path.cyan(),
         old_version_str.yellow(),
         version.to_string().bold().green()
     );
     Ok(())
 }
 
-/// Extracts the version string from the TOML document.
-fn get_version_from_toml(doc: &DocumentMut) -> Result<&str, Box<dyn std::error::Error>> {
-    doc.get("project")
-        .and_then(|p| p.get("version"))
-        .and_then(Item::as_str)
-        .ok_or_else(|| "Version not found or invalid in pyproject.toml".into())
+/// Extracts the version string from the TOML document using the specified path.
+fn get_version_from_toml<'a>(
+    doc: &'a DocumentMut,
+    version_path: &[&str],
+) -> Result<&'a str, Box<dyn std::error::Error>> {
+    let mut current = doc.as_item();
+
+    for (i, &key) in version_path.iter().enumerate() {
+        current = current.get(key).ok_or_else(|| {
+            let path_so_far = version_path[..=i].join(".");
+            format!("'{}' not found in configuration file", path_so_far)
+        })?;
+    }
+
+    current.as_str().ok_or_else(|| {
+        format!(
+            "Version at path '{}' is not a string",
+            version_path.join(".")
+        )
+        .into()
+    })
 }
 
-/// Updates the version field in the TOML document.
+/// Updates the version field in the TOML document at the specified path.
 fn update_version_in_toml(
     doc: &mut DocumentMut,
     new_version: String,
+    version_path: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let project_table = doc
-        .get_mut("project")
-        .and_then(Item::as_table_mut)
-        .ok_or_else(|| {
-            Box::<dyn std::error::Error>::from("'project' table not found in pyproject.toml")
-        })?;
+    if version_path.is_empty() {
+        return Err("Version path cannot be empty".into());
+    }
 
-    project_table["version"] = toml_edit::value(new_version);
+    let mut current = doc.as_table_mut();
+
+    // Navigate to the parent of the version field
+    for &key in &version_path[..version_path.len() - 1] {
+        current = current
+            .get_mut(key)
+            .and_then(Item::as_table_mut)
+            .ok_or_else(|| format!("'{}' table not found in configuration file", key))?
+    }
+
+    // Update the version field
+    let version_key = version_path[version_path.len() - 1];
+    {
+        current[version_key] = toml_edit::value(new_version);
+    }
+
     Ok(())
 }
 
