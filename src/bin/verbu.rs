@@ -659,11 +659,13 @@ fn update_version_in_toml(
 }
 
 /// Bumps the dev version (e.g., dev3 -> dev4).
-/// If the version has no pre-release, it becomes dev0.
+/// If the version has no pre-release (stable version), it first bumps patch then becomes dev0.
 /// If it has a non-dev pre-release, it becomes dev0.
 fn bump_dev(version: &mut Version) -> Result<(), Box<dyn std::error::Error>> {
     let pre = &mut version.pre;
     if pre.is_empty() {
+        // If it's a stable version, bump patch first then make it dev0
+        version.patch += 1;
         *pre = Prerelease::new("dev0")?;
     } else if let Some(n_str) = pre.as_str().strip_prefix("dev") {
         if let Ok(n) = n_str.parse::<u64>() {
