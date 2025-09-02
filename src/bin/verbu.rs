@@ -1,13 +1,16 @@
 use clap::{Parser, ValueEnum};
 use colored::*;
-// Added for colorful output
 use git2::{Repository, StatusOptions};
 use glob::glob;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use semver::{BuildMetadata, Prerelease, Version};
+use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+use fs_extra::file::write_all;
+use serde_json::Map;
 use toml_edit::{DocumentMut, Item};
 
 /// Supported project types
@@ -43,13 +46,15 @@ impl ProjectConfig {
                 file_name: "Cargo.toml",
                 version_path: vec!["package", "version"],
             }),
-            ProjectType::Node => None, // JSON support would require additional dependencies
+            ProjectType::Node => Some(ProjectConfig {
+                file_name: "package.json",
+                version_path: vec!["version"],
+            }),
             ProjectType::Auto => None, // Auto-detection handled separately
         }
     }
 
     fn detect(project_path: &Path) -> Option<(ProjectType, Self)> {
-        // Try detection in order of preference
         let configs = [
             (
                 ProjectType::Python,
@@ -58,6 +63,10 @@ impl ProjectConfig {
             (
                 ProjectType::Cargo,
                 ProjectConfig::for_type(ProjectType::Cargo),
+            ),
+            (
+                ProjectType::Node,
+                ProjectConfig::for_type(ProjectType::Node),
             ),
         ];
 
@@ -73,20 +82,17 @@ impl ProjectConfig {
 }
 
 /// Increment patch version number.
-/// Note: Pre-release and build metadata are handled by the calling `bump_version` function.
 pub fn increment_patch(version: &mut Version) {
     version.patch += 1;
 }
 
 /// Increment minor version number and reset patch to 0.
-/// Note: Pre-release and build metadata are handled by the calling `bump_version` function.
 pub fn increment_minor(version: &mut Version) {
     version.minor += 1;
     version.patch = 0;
 }
 
 /// Increment major version number and reset minor and patch to 0.
-/// Note: Pre-release and build metadata are handled by the calling `bump_version` function.
 pub fn increment_major(version: &mut Version) {
     version.major += 1;
     version.minor = 0;
@@ -119,12 +125,7 @@ struct Args {
     release: bool,
 
     /// Bump version only if there are git changes in the project directory
-    #[arg(
-        short,
-        long,
-        default_value_t = false,
-        help = "Bump version only if there are git changes in the project directory"
-    )]
+    #[arg(short, long, default_value_t = false)]
     git_aware: bool,
 
     /// File extensions to watch for changes in git-aware mode (comma-separated)
@@ -132,7 +133,6 @@ struct Args {
         short = 'w',
         long,
         env = "WATCH_EXTENSIONS",
-        help = "File extensions to watch for changes in git-aware mode (comma-separated, e.g., 'py,rs,js')"
     )]
     watch_extensions: Option<String>,
 
@@ -156,7 +156,7 @@ fn discover_repository(project_path: &Path) -> Result<Repository, Box<dyn std::e
                 "Failed to discover git repository. Ensure you are in a git repository and project paths are correct. Error: {}",
                 e
             )
-            .into()
+                .into()
         })
     })
 }
@@ -170,7 +170,6 @@ fn get_relative_project_path(
         .workdir()
         .ok_or("Git repository is bare, cannot check for changes.")?;
 
-    // Canonicalize project_path to get an absolute, normalized path.
     let canonical_project_path = project_path.canonicalize().map_err(|e| {
         format!(
             "Failed to canonicalize project path '{}': {}. Ensure path is valid.",
@@ -179,8 +178,6 @@ fn get_relative_project_path(
         )
     })?;
 
-    // Canonicalize repo_workdir as well to ensure consistent path formats for strip_prefix,
-    // especially for handling `\\?\` prefixes on Windows.
     let canonical_repo_workdir = repo_workdir_raw.canonicalize().map_err(|e| {
         format!(
             "Failed to canonicalize repository workdir '{}': {}",
@@ -189,7 +186,6 @@ fn get_relative_project_path(
         )
     })?;
 
-    // Get project_path relative to the repository's workdir.
     canonical_project_path
         .strip_prefix(&canonical_repo_workdir)
         .map(|p| p.to_path_buf())
@@ -201,7 +197,7 @@ fn get_relative_project_path(
                 repo_workdir_raw.display(),
                 canonical_repo_workdir.display()
             )
-            .into()
+                .into()
         })
 }
 
@@ -228,15 +224,12 @@ fn has_git_changes_in_path(
     status_opts.include_untracked(true);
     status_opts.recurse_untracked_dirs(true);
 
-    // If relative_project_path is empty, it means project_path is the repo root.
-    // In this case, we don't set a pathspec, so it checks all files in the repo.
     if !relative_project_path.as_os_str().is_empty() {
         status_opts.pathspec(&relative_project_path);
     }
 
     let statuses = repo.statuses(Some(&mut status_opts))?;
 
-    // Check if any changed files have allowed extensions
     for entry in statuses.iter() {
         if let Some(file_path) = entry.path() {
             if has_allowed_extension(file_path, allowed_extensions) {
@@ -248,9 +241,7 @@ fn has_git_changes_in_path(
     Ok(false)
 }
 
-/// Processes a single project directory: detects project type, verifies config file existence, and calls `bump_version`.
-/// Returns `Ok(true)` if version was bumped, `Ok(false)` if skipped,
-/// or `Err` for critical errors.
+/// Processes a single project directory.
 fn process_project_directory(
     project_path: &Path,
     bump_level: u8,
@@ -259,10 +250,9 @@ fn process_project_directory(
     allowed_extensions: &[String],
     project_type: ProjectType,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    // Determine project configuration
     let (detected_type, config) = match project_type {
         ProjectType::Auto => match ProjectConfig::detect(project_path) {
-            Some((detected_type, config)) => (detected_type, config),
+            Some((t, c)) => (t, c),
             None => {
                 eprintln!(
                     "{} {}: No supported project configuration file found in {}. Skipping.",
@@ -290,7 +280,7 @@ fn process_project_directory(
             }
             None => {
                 eprintln!(
-                    "{} {}: Project type {:?} is not yet supported. Skipping.",
+                    "{} {}: Project type {:?} is not supported. Skipping.",
                     "⚠️".yellow(),
                     "Skipping".yellow(),
                     specific_type
@@ -321,7 +311,7 @@ fn process_project_directory(
                     project_path.display().to_string().cyan(),
                     allowed_extensions.join(",").yellow()
                 );
-                return Ok(false); // Skipped due to no git changes
+                return Ok(false);
             }
             Err(e) => {
                 eprintln!(
@@ -331,12 +321,7 @@ fn process_project_directory(
                     project_path.display().to_string().cyan(),
                     e.to_string().red()
                 );
-                return Err(format!(
-                    "Error checking git status for {}: {}",
-                    project_path.display(),
-                    e
-                )
-                .into());
+                return Err(format!("Error checking git status: {}", e).into());
             }
         }
     }
@@ -348,6 +333,7 @@ fn process_project_directory(
         detected_type,
         project_path.display().to_string().cyan()
     );
+
     bump_version(
         config_path.to_str().ok_or_else(|| {
             format!(
@@ -359,12 +345,10 @@ fn process_project_directory(
         release,
         &config,
     )?;
-    Ok(true) // Successfully processed and bumped version
+    Ok(true)
 }
 
 /// Processes projects found via a single glob pattern.
-/// Returns Ok(bool) indicating if any project was processed under this pattern,
-/// or Err for critical errors that should halt all operations.
 fn process_glob_pattern(
     project_glob_pattern: &str,
     bump_level: u8,
@@ -383,20 +367,11 @@ fn process_glob_pattern(
                 project_glob_pattern.yellow(),
                 e.to_string().red()
             );
-            return Ok(false); // Not a critical error for the whole app, just this pattern.
+            return Ok(false);
         }
     };
 
     let mut found_paths_for_pattern = false;
-
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(&["-", "\\", "|", "/"])
-            .template("{spinner} {wide_msg}")
-            .unwrap(),
-    );
-
     let paths: Vec<_> = entries
         .filter_map(|entry| match entry {
             Ok(p) => {
@@ -432,6 +407,14 @@ fn process_glob_pattern(
         return Ok(false);
     }
 
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["-", "\\", "|", "/"])
+            .template("{spinner} {wide_msg}")
+            .unwrap(),
+    );
+    pb.set_message("Processing projects...");
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     let results: Vec<_> = paths
@@ -459,20 +442,18 @@ fn process_glob_pattern(
     Ok(!results.is_empty())
 }
 
-/// Main function entry point
+/// Main function
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut processed_any_project_overall = false;
 
-    // Determine default extensions based on project type
     let default_extensions = match args.project_type {
         ProjectType::Python => "py",
         ProjectType::Cargo => "rs",
-        ProjectType::Node => "js,ts",
-        ProjectType::Auto => "py,rs,js,ts",
+        ProjectType::Node => "js,ts,jsx,tsx,json",
+        ProjectType::Auto => "py,rs,js,ts,jsx,tsx,json",
     };
 
-    // Parse allowed extensions from the command line argument or use defaults
     let allowed_extensions: Vec<String> = args
         .watch_extensions
         .as_deref()
@@ -491,20 +472,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &allowed_extensions,
             args.project_type,
         ) {
-            Ok(processed_this_pattern) => {
-                if processed_this_pattern {
+            Ok(processed) => {
+                if processed {
                     processed_any_project_overall = true;
                 }
             }
             Err(e) => {
-                // The specific error message should have already been printed with colors.
-                // Return an error that indicates context, preserving the original error cause.
                 return Err(format!(
                     "Aborted due to error while processing pattern '{}'. Original error: {}",
                     project_glob_pattern.yellow(),
                     e
                 )
-                .into());
+                    .into());
             }
         }
     }
@@ -517,12 +496,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 " No supported project configuration file found in the current directory.",
             );
         } else if args.git_aware {
-            error_message.push_str(&format!(" In git-aware mode, this can also occur if no targeted projects had relevant git changes for watched extensions ({}).", allowed_extensions.join(",")));
+            error_message.push_str(&format!(
+                " In git-aware mode, this can also occur if no targeted projects had relevant git changes for watched extensions ({}).",
+                allowed_extensions.join(",")
+            ));
         }
-        error_message.push_str(" Please check paths, glob patterns, and ensure a supported project configuration file exists in target project directories.");
+        error_message
+            .push_str(" Please check paths, glob patterns, and ensure a supported project configuration file exists.");
 
         eprintln!("{} {}", "❌".red(), error_message.red());
-        // Return the error message; it will be printed by Rust's default error handler if main returns Err.
         return Err(error_message.into());
     }
 
@@ -530,32 +512,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Bumps the version of the specified project.
-///
-/// # Arguments
-///
-/// * `config_path` - Path to the project configuration file.
-/// * `level` - Bump level (0~3), corresponding to dev/patch/minor/major.
-/// * `release_mode` - If true, makes the version a release version (removes pre-release/build).
-/// * `config` - Project configuration containing version path information.
 fn bump_version(
     config_path: &str,
     level: u8,
     release_mode: bool,
     config: &ProjectConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let contents = fs::read_to_string(config_path)?;
-    let mut doc = contents.parse::<DocumentMut>()?;
+    let path = Path::new(config_path);
+    let version_str = if path.extension().and_then(|s| s.to_str()) == Some("json") {
+        get_version_from_json(config_path, &config.version_path)?
+    } else {
+        let contents = fs::read_to_string(config_path)?;
+        let doc = contents.parse::<DocumentMut>()?;
+        get_version_from_toml(&doc, &config.version_path)?
+            .to_string()
+    };
 
-    let version_str = get_version_from_toml(&doc, &config.version_path)?;
-    let mut version = Version::parse(version_str)?;
-    let old_version_str = version.to_string(); // For logging
+    let mut version = Version::parse(&version_str)?;
+    let old_version_str = version.to_string();
 
-    // Step 1: Apply numeric increment if level > 0
     match level {
         1 => increment_patch(&mut version),
         2 => increment_minor(&mut version),
         3 => increment_major(&mut version),
-        0 => {} // No numeric change based on level itself for this step
+        0 => {}
         _ => {
             eprintln!(
                 "{} {}: Too many -i flags: use up to 3",
@@ -566,35 +546,28 @@ fn bump_version(
         }
     }
 
-    // Step 2: Set pre-release identifier
     if release_mode {
-        // If -r is specified, it's a release version, clear pre-release.
         version.pre = Prerelease::EMPTY;
     } else {
-        // Not a release version.
         if level == 0 {
-            // Default action (no -i flags), bump dev.
-            // bump_dev handles its own pre-release logic.
             bump_dev(&mut version)?;
         } else {
-            // Bumped patch, minor, or major (-i, -ii, -iii) and not -r.
-            // Instruction: "bump到新版本的时候一定是-dev0"
-            // (When bumping to a new version, it must be -dev0)
-            version.pre =
-                Prerelease::new("dev0").expect("Static string 'dev0' should be valid prerelease");
+            version.pre = Prerelease::new("dev0").expect("Valid prerelease identifier");
         }
     }
 
-    // Step 3: Set build metadata.
-    // Clear build metadata if we bumped a component (level > 0) or if making a release (release_mode is true).
-    // If only bumping dev (level is 0 and not release_mode), preserve bump_dev's behavior regarding build metadata
-    // (bump_dev itself does not modify build metadata).
     if level > 0 || release_mode {
         version.build = BuildMetadata::EMPTY;
     }
 
-    update_version_in_toml(&mut doc, version.to_string(), &config.version_path)?;
-    fs::write(config_path, doc.to_string())?;
+    if path.extension().and_then(|s| s.to_str()) == Some("json") {
+        update_version_in_json(config_path, version.to_string(), &config.version_path)?;
+    } else {
+        let mut doc = fs::read_to_string(config_path)?.parse::<DocumentMut>()?;
+        update_version_in_toml(&mut doc, version.to_string(), &config.version_path)?;
+        fs::write(config_path, doc.to_string())?;
+    }
+
     println!(
         "{} {} in {} from {} to {}",
         "🎉".green(),
@@ -603,10 +576,11 @@ fn bump_version(
         old_version_str.yellow(),
         version.to_string().bold().green()
     );
+
     Ok(())
 }
 
-/// Extracts the version string from the TOML document using the specified path.
+/// Extracts version from TOML
 fn get_version_from_toml<'a>(
     doc: &'a DocumentMut,
     version_path: &[&str],
@@ -625,11 +599,11 @@ fn get_version_from_toml<'a>(
             "Version at path '{}' is not a string",
             version_path.join(".")
         )
-        .into()
+            .into()
     })
 }
 
-/// Updates the version field in the TOML document at the specified path.
+/// Updates version in TOML
 fn update_version_in_toml(
     doc: &mut DocumentMut,
     new_version: String,
@@ -641,45 +615,94 @@ fn update_version_in_toml(
 
     let mut current = doc.as_table_mut();
 
-    // Navigate to the parent of the version field
     for &key in &version_path[..version_path.len() - 1] {
         current = current
             .get_mut(key)
             .and_then(Item::as_table_mut)
-            .ok_or_else(|| format!("'{}' table not found in configuration file", key))?
+            .ok_or_else(|| format!("'{}' table not found in configuration file", key))?;
     }
 
-    // Update the version field
-    let version_key = version_path[version_path.len() - 1];
-    {
-        current[version_key] = toml_edit::value(new_version);
-    }
+    let version_key = version_path.last().ok_or_else(
+        || format!(
+            "Version key '{}' not found in {}",
+            version_path.last().unwrap(),
+            version_path[..version_path.len() - 1].join(".")
+        )
+    )?;
+    current[version_key] = toml_edit::value(new_version);
 
     Ok(())
 }
 
-/// Bumps the dev version (e.g., dev3 -> dev4).
-/// If the version has no pre-release (stable version), it first bumps patch then becomes dev0.
-/// If it has a non-dev pre-release, it becomes dev0.
+/// Reads version from JSON
+fn get_version_from_json(
+    config_path: &str,
+    version_path: &[&str],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let contents = fs::read_to_string(config_path)?;
+    let value: serde_json::Value = serde_json::from_str(&contents)?;
+
+    let mut current = &value;
+    for &key in version_path {
+        current = current
+            .get(key)
+            .ok_or_else(|| format!("Key '{}' not found in {}", key, config_path))?;
+    }
+
+    current
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Version field is not a string".into())
+}
+
+/// Updates version in JSON and writes back with formatting
+fn update_version_in_json(
+    config_path: &str,
+    new_version: String,
+    version_path: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = std::fs::File::open(config_path)?;
+    let mut buf_reader = std::io::BufReader::new(&file);
+    let mut contents = String::new();
+    buf_reader.read_to_string(&mut contents)?;
+
+    let mut data: Map<String, serde_json::Value> = serde_json::from_str(&contents)?;
+
+    let mut current = &mut data;
+    for &key in &version_path[..version_path.len() - 1] {
+        current = current
+            .get_mut(key)
+            .and_then(|v| v.as_object_mut())
+            .ok_or_else(|| format!("Intermediate key '{}' not found or not an object", key))?;
+    }
+
+    let last_key = version_path.last().unwrap();
+    *current
+        .get_mut(*last_key)
+        .ok_or_else(|| format!("Final key '{}' not found", last_key))? =
+        serde_json::Value::String(new_version);
+
+    let formatted = serde_json::to_string_pretty(&data)?;
+    drop(file);
+
+    write_all(config_path,&formatted)?;
+    Ok(())
+}
+
+/// Bumps dev version (e.g., dev3 → dev4)
 fn bump_dev(version: &mut Version) -> Result<(), Box<dyn std::error::Error>> {
     let pre = &mut version.pre;
     if pre.is_empty() {
-        // If it's a stable version, bump patch first then make it dev0
         version.patch += 1;
         *pre = Prerelease::new("dev0")?;
     } else if let Some(n_str) = pre.as_str().strip_prefix("dev") {
         if let Ok(n) = n_str.parse::<u64>() {
             *pre = Prerelease::new(&format!("dev{}", n + 1))?;
         } else {
-            // Handles cases like "devX" where X is not a number, or "dev" itself.
-            // Treat as a new "dev0" sequence.
             *pre = Prerelease::new("dev0")?;
         }
     } else {
-        // If it's some other pre-release (e.g., "alpha1", "rc2"), convert it to "dev0".
         *pre = Prerelease::new("dev0")?;
     }
-    // Build metadata is not touched by bump_dev by design.
-    // The calling function `bump_version` decides on handling build metadata globally.
     Ok(())
 }

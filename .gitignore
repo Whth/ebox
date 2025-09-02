@@ -4,3 +4,4 @@ target
 *.json
 search_output
 xplot11_logfile
+.idea
