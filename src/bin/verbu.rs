@@ -5,7 +5,6 @@ use glob::glob;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use semver::{BuildMetadata, Prerelease, Version};
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -661,7 +660,7 @@ fn update_version_in_json(
     new_version: String,
     version_path: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = std::fs::File::open(config_path)?;
+    let file =fs::File::open(config_path)?;
     let mut buf_reader = std::io::BufReader::new(&file);
     let mut contents = String::new();
     buf_reader.read_to_string(&mut contents)?;
