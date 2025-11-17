@@ -1,7 +1,7 @@
 mod utils;
 
 use crate::utils::extract_locations;
-use clap::{arg, Args as ClapArgs, Parser, Subcommand};
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use ndarray::prelude::*;
 use rayon::prelude::*;

@@ -124,7 +124,7 @@ fn main() {
         .filter(|s| !s.is_empty())
         .collect();
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
 
     let download_count = (start..end)
@@ -146,7 +146,7 @@ fn main() {
                 .expect("Failed to get exit status")
                 .success();
 
-            thread::sleep(Duration::from_secs(rng.gen_range(interval / 2..=interval / 3 * 2)));
+            thread::sleep(Duration::from_secs(rng.random_range(interval / 2..=interval / 3 * 2)));
             _success
         }).count();
 
