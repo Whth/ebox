@@ -8,7 +8,8 @@ use polars::prelude::*;
 use rand::prelude::*;
 use rayon::prelude::*;
 use scirs2_metrics::clustering;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use rand::{rng};
 
 #[derive(Parser)]
 #[command(author, about)]
@@ -57,7 +58,9 @@ enum IndicatorType {
 }
 
 fn opt_best_n_state(arg: Nop) -> Result<(), Box<dyn std::error::Error>> {
-    let data: Vec<f64> = LazyCsvReader::new(arg.input)
+    let path: Arc<Path> = Arc::from(arg.input.as_ref());
+
+    let data: Vec<f64> = LazyCsvReader::new(PlPath::Local(path))
         .with_has_header(true)
         .finish()?
         .select([col(&arg.wind_field)])
@@ -95,7 +98,7 @@ fn opt_best_n_state(arg: Nop) -> Result<(), Box<dyn std::error::Error>> {
             if data.len() > sample_limit {
                 // Data size exceeds limit, perform random sampling
                 // Assumes `use rand::thread_rng;` and `use rand::seq::SliceRandom;` are present or IDE will add them.
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 let all_indices: Vec<usize> = (0..data.len()).collect();
 
                 let chosen_indices: Vec<usize> = all_indices

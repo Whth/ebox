@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use anyhow::Result;
 use clap::Parser;
 use polars::prelude::*;
@@ -7,7 +8,7 @@ use polars::prelude::*;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to input CSV file
-    input: String,
+    input: PathBuf,
 
     /// Path to output CSV file
     #[arg(short, long, default_value = "filtered.csv")]
@@ -28,9 +29,9 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-
+    let path: Arc<Path> = Arc::from(args.input.as_ref());
     // Read CSV into DataFrame
-    let df = LazyCsvReader::new(&args.input)
+    let df = LazyCsvReader::new(PlPath::Local(path))
         .with_has_header(true)
         .with_dtype_overwrite(Some(SchemaRef::new(Schema::from_iter(vec![(
             PlSmallStr::from_str("naca_code"),
