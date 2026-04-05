@@ -135,6 +135,10 @@ struct Args {
     )]
     watch_extensions: Option<String>,
 
+    /// Include configuration file changes (e.g., pyproject.toml, Cargo.toml) as valid changes for git-aware mode
+    #[arg(short = 'C',long, default_value_t = false)]
+    include_config: bool,
+
     /// Project type to process
     #[arg(
         short = 't',
@@ -210,11 +214,28 @@ fn has_allowed_extension(file_path: &str, allowed_extensions: &[String]) -> bool
     false
 }
 
+/// Checks if a file is a known project configuration file.
+fn is_config_file(file_path: &str, project_type: ProjectType) -> bool {
+    let path = Path::new(file_path);
+    let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+
+    match project_type {
+        ProjectType::Python => file_name == "pyproject.toml",
+        ProjectType::Cargo => file_name == "Cargo.toml",
+        ProjectType::Node => file_name == "package.json",
+        ProjectType::Auto => {
+            file_name == "pyproject.toml" || file_name == "Cargo.toml" || file_name == "package.json"
+        }
+    }
+}
+
 /// Checks if there are any git changes (modified, added, untracked, etc.)
 /// within the specified project path, filtering by allowed file extensions.
 fn has_git_changes_in_path(
     project_path: &Path,
     allowed_extensions: &[String],
+    include_config: bool,
+    project_type: ProjectType,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let repo = discover_repository(project_path)?;
     let relative_project_path = get_relative_project_path(project_path, &repo)?;
@@ -231,6 +252,12 @@ fn has_git_changes_in_path(
 
     for entry in statuses.iter() {
         if let Some(file_path) = entry.path() {
+            // If include_config is true, check if it's a config file first
+            if include_config && is_config_file(file_path, project_type) {
+                return Ok(true);
+            }
+
+            // Otherwise check standard extensions
             if has_allowed_extension(file_path, allowed_extensions) {
                 return Ok(true);
             }
@@ -247,6 +274,7 @@ fn process_project_directory(
     release: bool,
     git_aware: bool,
     allowed_extensions: &[String],
+    include_config: bool,
     project_type: ProjectType,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let (detected_type, config) = match project_type {
@@ -292,7 +320,11 @@ fn process_project_directory(
     let config_path = project_path.join(config.file_name);
 
     if git_aware {
-        match has_git_changes_in_path(project_path, allowed_extensions) {
+        // Pass detected_type to has_git_changes_in_path so it knows which config file to look for
+        // even if global project_type is Auto
+        let check_type = if project_type == ProjectType::Auto { detected_type } else { project_type };
+
+        match has_git_changes_in_path(project_path, allowed_extensions, include_config, check_type) {
             Ok(true) => {
                 println!(
                     "{} {}: Git changes detected in {} (watching: {}). Proceeding.",
@@ -354,6 +386,7 @@ fn process_glob_pattern(
     release: bool,
     git_aware: bool,
     allowed_extensions: &[String],
+    include_config: bool,
     project_type: ProjectType,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let entries = match glob(project_glob_pattern) {
@@ -426,6 +459,7 @@ fn process_glob_pattern(
                 release,
                 git_aware,
                 allowed_extensions,
+                include_config,
                 project_type,
             ) {
                 Ok(true) => Some(true),
@@ -469,6 +503,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.release,
             args.git_aware,
             &allowed_extensions,
+            args.include_config,
             args.project_type,
         ) {
             Ok(processed) => {
