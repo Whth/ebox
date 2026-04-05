@@ -1,13 +1,13 @@
 [package]
 name = "ebox"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.52", features = ["derive", "env", "string", "unicode"] }
 chrono = "0.4.42"
 walkdir = "2.5.0"
-ffmpeg-next = { version = "8.0.0", features = ["static"] }
+ffmpeg-next = { version = "8.0.0", features = ["static"] ,optional = true}
 rayon = "1.11.0"
 tokio = { version = "1.48.0", features = ["full"] }
 futures = "0.3.31"
@@ -48,12 +48,16 @@ toml_edit = "0.23.7"
 semver = { version = "1.0.27", features = ["serde"] }
 git2 = "0.20.2"
 
+[features]
+vmd = ["ffmpeg-next/static"]
+
 [workspace]
 package = { }
 
 [[bin]]
 name = "vmd"
 path = "src/bin/vmd.rs"
+required-features = ["vmd"]
 
 [[bin]]
 name = "ag"
