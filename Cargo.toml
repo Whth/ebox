@@ -1,6 +1,6 @@
 [package]
 name = "ebox"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 
 [dependencies]
@@ -41,7 +41,7 @@ anyhow = "1.0.100"
 netcdf = { version = "0.11.1", features = ["static"] }
 ndarray = { version = "0.16.1", features = ["rayon"] }
 foxil = { path = "src/bin/ffoil/foxil" }
-kmeans = "2.0.1"
+kmeans = { version = "2.0.1" ,optional = true}
 polars = { version = "0.51.0", features = ["csv", "dtype-categorical", "lazy", "ndarray"] }
 scirs2-metrics = "0.1.0-rc.2"
 toml_edit = "0.23.7"
@@ -50,7 +50,7 @@ git2 = "0.20.2"
 
 [features]
 vmd = ["ffmpeg-next/static"]
-
+makwei = ['dep:kmeans']
 [workspace]
 package = { }
 
@@ -215,6 +215,7 @@ path = "src/bin/ffoil/ffoil.rs"
 [[bin]]
 name = "makwei"
 path = "src/bin/makwei/makwei.rs"
+required-features = ["makwei"]
 
 [[bin]]
 name = "fof"

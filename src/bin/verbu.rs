@@ -13,7 +13,7 @@ use serde_json::Map;
 use toml_edit::{DocumentMut, Item};
 
 /// Supported project types
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum,PartialEq)]
 pub(crate) enum ProjectType {
     /// Python project with pyproject.toml
     Python,
