@@ -1,6 +1,6 @@
 [package]
 name = "ebox"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 
 [dependencies]
@@ -55,8 +55,11 @@ basic = ["ag", "mf", "sz", "am", "avd", "renm", "xect", "fof"]
 video = ["vmd", "pmov", "sufk", "avd", "cdd", "vlc", "bpdf", "mpr"]
 
 ag = ["dep:chrono", "dep:walkdir", "dep:rayon", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:glob", "dep:dirs", "dep:log", "dep:anyhow", "dep:toml_edit"]
-mf = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:semver"]
-sz = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+mf = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:semver",
+"dep:strsim"
+]
+sz = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit",
+"dep:humansize"]
 am = ["dep:toml", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:shellexpand", "dep:dirs", "dep:log", "dep:anyhow", "dep:toml_edit"]
 pmov = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger"]
 sufk = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
