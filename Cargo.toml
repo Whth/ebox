@@ -5,38 +5,38 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.52", features = ["derive", "env", "string", "unicode"] }
-chrono = "0.4.42"
-walkdir = "2.5.0"
-rayon = "1.11.0"
-tokio = { version = "1.48.0", features = ["full"] }
-futures = "0.3.31"
-async-openai = { version = "0.30.1", features = ["native-tls", "realtime"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-toml = "0.9.8"
-shellexpand = "3.1.1"
-prettytable = "0.10.0"
-strsim = "0.11.1"
-dialoguer = "0.12.0"
-fs_extra = "1.3.0"
-humansize = "2.1.3"
-regex = "1.12.2"
-glob = "0.3.3"
-dirs = "6.0.0"
-log = "0.4.28"
-csv = "1.4.0"
-num_cpus = "1.17.0"
-rand = "0.9.2"
-reqwest = { version = "0.12.24", features = ["blocking"] }
-clap-verbosity-flag = "3.0.4"
-env_logger = "0.11.8"
-colored = "3.0.0"
-indicatif = { version = "0.18.3", features = ["rayon"] }
-anyhow = "1.0.100"
-toml_edit = "0.23.7"
-semver = { version = "1.0.27", features = ["serde"] }
-git2 = "0.20.2"
-md5 = "0.7"
+chrono = { version = "0.4.42", optional = true }
+walkdir = { version = "2.5.0", optional = true }
+rayon = { version = "1.11.0", optional = true }
+tokio = { version = "1.48.0", features = ["full"], optional = true }
+futures = { version = "0.3.31", optional = true }
+async-openai = { version = "0.30.1", features = ["native-tls", "realtime"], optional = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+serde_json = { version = "1.0.145", optional = true }
+toml = { version = "0.9.8", optional = true }
+shellexpand = { version = "3.1.1", optional = true }
+prettytable = { version = "0.10.0", optional = true }
+strsim = { version = "0.11.1", optional = true }
+dialoguer = { version = "0.12.0", optional = true }
+fs_extra = { version = "1.3.0", optional = true }
+humansize = { version = "2.1.3", optional = true }
+regex = { version = "1.12.2", optional = true }
+glob = { version = "0.3.3", optional = true }
+dirs = { version = "6.0.0", optional = true }
+log = { version = "0.4.28", optional = true }
+csv = { version = "1.4.0", optional = true }
+num_cpus = { version = "1.17.0", optional = true }
+rand = { version = "0.9.2", optional = true }
+reqwest = { version = "0.12.24", features = ["blocking"], optional = true }
+clap-verbosity-flag = { version = "3.0.4", optional = true }
+env_logger = { version = "0.11.8", optional = true }
+colored = { version = "3.0.0", optional = true }
+indicatif = { version = "0.18.3", features = ["rayon"], optional = true }
+anyhow = { version = "1.0.100", optional = true }
+toml_edit = { version = "0.23.7", optional = true }
+semver = { version = "1.0.27", features = ["serde"], optional = true }
+git2 = { version = "0.20.2", optional = true }
+md5 = { version = "0.7", optional = true }
 
 ffmpeg-next = { version = "8.0.0", features = ["static"], optional = true }
 kmeans = { version = "2.0.1", optional = true }
@@ -50,51 +50,51 @@ ndarray = { version = "0.16.1", features = ["rayon"], optional = true }
 foxil = { path = "src/bin/ffoil/foxil", optional = true }
 
 [features]
-default = ["basic"]
+default = []
 basic = ["ag", "mf", "sz", "am", "avd", "renm", "xect", "fof"]
 video = ["vmd", "pmov", "sufk", "avd", "cdd", "vlc", "bpdf", "mpr"]
 
-ag = []
-mf = []
-sz = []
-am = []
-pmov = []
-sufk = []
-rstrip = []
-wprune = []
-pdfp = []
-onize = []
-rpl = []
-facm = []
-arep = []
-avd = []
-cdd = []
-vlc = []
-reduce = []
-pam = []
-xect = []
-cpr = []
-bpdf = []
-mpr = []
-recmd = []
-renm = []
-hive = []
-corda = []
-ciklen = []
-adconv = []
-thernam = []
-verbu = []
+ag = ["dep:chrono", "dep:walkdir", "dep:rayon", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:glob", "dep:dirs", "dep:log", "dep:anyhow", "dep:toml_edit"]
+mf = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:semver"]
+sz = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+am = ["dep:toml", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:shellexpand", "dep:dirs", "dep:log", "dep:anyhow", "dep:toml_edit"]
+pmov = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger"]
+sufk = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+rstrip = ["dep:walkdir", "dep:regex", "dep:anyhow"]
+wprune = ["dep:walkdir", "dep:regex", "dep:anyhow"]
+pdfp = ["dep:walkdir", "dep:anyhow"]
+onize = ["dep:serde", "dep:serde_json", "dep:toml", "dep:anyhow", "dep:toml_edit"]
+rpl = ["dep:walkdir", "dep:regex", "dep:anyhow"]
+facm = ["dep:walkdir", "dep:regex", "dep:anyhow"]
+arep = ["dep:serde", "dep:serde_json", "dep:toml", "dep:anyhow", "dep:toml_edit", "dep:reqwest"]
+avd = ["dep:chrono", "dep:rayon", "dep:serde", "dep:serde_json", "dep:csv", "dep:rand", "dep:reqwest", "dep:dialoguer", "dep:colored", "dep:anyhow", "dep:md5"]
+cdd = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+vlc = ["dep:walkdir", "dep:anyhow"]
+reduce = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger", "dep:indicatif"]
+pam = ["dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger"]
+xect = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger"]
+cpr = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+bpdf = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:reqwest"]
+mpr = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+recmd = ["dep:serde", "dep:serde_json", "dep:toml", "dep:anyhow", "dep:toml_edit", "dep:reqwest", "dep:async-openai", "dep:tokio", "dep:futures"]
+renm = ["dep:walkdir", "dep:regex", "dep:anyhow", "dep:clap-verbosity-flag", "dep:env_logger"]
+hive = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:num_cpus"]
+corda = ["dep:serde", "dep:serde_json", "dep:toml", "dep:anyhow", "dep:toml_edit", "dep:reqwest"]
+ciklen = ["dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:reqwest"]
+adconv = ["dep:walkdir", "dep:anyhow"]
+thernam = ["dep:walkdir", "dep:anyhow"]
+verbu = ["dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:anyhow", "dep:toml_edit"]
 
-vmd = ["ffmpeg-next/static", "image", "hound"]
-makwei = ["kmeans", "polars", "ndarray"]
-fof = ["polars"]
-startups = ["mslnk"]
-bdocx = ["docx-rs"]
-pls = ["image"]
-pps = ["image"]
-aupr = ["hound"]
-nccsv = ["netcdf"]
-fffoil = ["foxil"]
+vmd = ["ffmpeg-next/static", "dep:image", "dep:hound", "dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger", "dep:indicatif"]
+makwei = ["dep:kmeans", "dep:polars", "dep:ndarray", "dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:num_cpus"]
+fof = ["dep:polars", "dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+startups = ["dep:mslnk", "dep:walkdir", "dep:anyhow"]
+bdocx = ["dep:docx-rs", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:anyhow", "dep:toml_edit"]
+pls = ["dep:image", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger"]
+pps = ["dep:image", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit", "dep:clap-verbosity-flag", "dep:env_logger"]
+aupr = ["dep:hound", "dep:walkdir", "dep:anyhow"]
+nccsv = ["dep:netcdf", "dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
+fffoil = ["dep:foxil", "dep:chrono", "dep:walkdir", "dep:serde", "dep:serde_json", "dep:toml", "dep:regex", "dep:fs_extra", "dep:dirs", "dep:anyhow", "dep:toml_edit"]
 
 [workspace]
 package = { }
